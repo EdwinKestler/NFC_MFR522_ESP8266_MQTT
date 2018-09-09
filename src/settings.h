@@ -19,8 +19,8 @@
 //-------- Customise these values-----------
 
 char MQTTServer [] = internetS;
-String FirmwareVersion= "V1.10";                                        //read in chage history
-String HardwareVersion= "V1.00";                                        //read in chage history 
+String FirmwareVersion= "V1.00";                                        //read in chage history
+String HardwareVersion= "V2.00";                                        //read in chage history 
 //---------Blurmix Topics---------------------
 
 const char publishTopic[] =     "iot-2/evt/status/fmt/NFC/json";

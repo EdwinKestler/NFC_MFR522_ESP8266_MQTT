@@ -88,41 +88,79 @@ int IdEventoT= 0;
 //----------------------------------------------------------------------Variables Propias del CORE ESP8266 Para la administracion del Modulo
 String NodeID = String(ESP.getChipId());                              //Variable Global que contiene la identidad del nodo (ChipID) o numero unico
 //------------------------------------------------------------------------------------denifinir el sonido de bocina
-void buzzer() {
+void buzzer(int delay_buzz) {
   digitalWrite(beep, HIGH);
-  delay(300);
+  delay(delay_buzz);
   digitalWrite(beep, LOW);
-  delay(100);
 }
 //----------------------------------------------------------------------Funcion remota para administrar las actulizaciones remotas de las variables configurables desde IBMbluemix
 void handleUpdate(byte* payload) {                                    //La Funcion recibe lo que obtenga Payload de la Funcion Callback que vigila el Topico de subcripcion (Subscribe TOPIC)
     StaticJsonBuffer<300> jsonBuffer;                                  //Se establece un Buffer de 1o suficientemente gande para almacenar los menasajes JSON
     JsonObject& root = jsonBuffer.parseObject((char*)payload);          //Se busca la raiz del mensaje Json convirtiendo los Bytes del Payload a Caracteres en el buffer
     if (!root.success()) {                                              //Si no se encuentra el objeto Raiz del Json
-        SSDEBUG.println(F("ERROR en la Letura del JSON Entrante"));        //Se imprime un mensaje de Error en la lectura del JSON
+        //SSDEBUG.println(F("ERROR en la Letura del JSON Entrante"));        //Se imprime un mensaje de Error en la lectura del JSON
         return;                                                           //Nos salimos de la funcion
     }                                                                //se cierra el condicional
-    SSDEBUG.println(F("handleUpdate payload:"));                         //si se pudo encontrar la raiz del objeto JSON se imprime u mensje
-    root.prettyPrintTo(Serial);                                         //y se imprime el mensaje recibido al Serial  
-    SSDEBUG.println();                                                   //dejamos una linea de pormedio para continuar con los mensajes de debugging
+    //SSDEBUG.println(F("handleUpdate payload:"));                         //si se pudo encontrar la raiz del objeto JSON se imprime u mensje
+    //root.prettyPrintTo(SSDEBUG);                                         //y se imprime el mensaje recibido al Serial  
+    //SSDEBUG.println();                                                   //dejamos una linea de pormedio para continuar con los mensajes de debugging
 }
 //----------------------------------------------------------------------Funcion remota para mandar a dormir el esp despues de enviar un RFID
 void handleResponse (byte* payloadrsp) {
     StaticJsonBuffer<200> jsonBuffer;                                   //Se establece un Buffer de 1o suficientemente gande para almacenar los menasajes JSON
     JsonObject& root = jsonBuffer.parseObject((char*)payloadrsp);       //Se busca la raiz del mensaje Json convirtiendo los Bytes del Payload a Caracteres en el buffer
     if (!root.success()) {                                                                              //Si no se encuentra el objeto Raiz del Json
-        SSDEBUG.println(F("ERROR en la Letura del JSON Entrante"));        //Se imprime un mensaje de Error en la lectura del JSON
+        //SSDEBUG.println(F("ERROR en la Letura del JSON Entrante"));        //Se imprime un mensaje de Error en la lectura del JSON
         return;                                                           //Nos salimos de la funcion
     }                                                                   //se cierra el condicional
 
-    SSDEBUG.println(F("handleResponse payload:"));                       //si se pudo encontrar la raiz del objeto JSON se imprime u mensje
-    root.printTo(Serial);                                         //y se imprime el mensaje recibido al Serial  
-    SSDEBUG.println();                                                   //dejamos una linea de pormedio para continuar con los mensajes de debugging
+    //SSDEBUG.println(F("handleResponse payload:"));                       //si se pudo encontrar la raiz del objeto JSON se imprime u mensje
+    root.prettyPrintTo(SSDEBUG);                                         //y se imprime el mensaje recibido al Serial  
+    //SSDEBUG.println();                                                   //dejamos una linea de pormedio para continuar con los mensajes de debugging
+
+    const char* Chip_ID = root["CHIPID"];                             // buscamos el valor del objeto dentro del Json
+    unsigned int new_alarm_state = root["ALARM_STATE"];              // buscamos en en un arreglo de objetos en la posicion 0
+    //SSDEBUG.println("los datos recibidos son:");
+    //SSDEBUG.print(F("Tipo de sensor: "));
+    //SSDEBUG.println(Chip_ID);                                             //imprimimos las valores recibidos en variables
+    String C_ID = String(Chip_ID);
+    if (C_ID == NodeID )
+    {
+      //SSDEBUG.print(F("nuevo estado de alarma:"));                               //imprimimos las valores recibidos en variables
+      //SSDEBUG.println(new_alarm_state);                                  //imprimimos las valores recibidos en variables
+      if(new_alarm_state == (int)1)
+      {
+        Rojo.Flash();
+        buzzer(500);
+        delay(50);
+        buzzer(500);
+      }
+      if(new_alarm_state == (int)2)
+      {
+        Verde.Flash();
+        buzzer(200);
+      }
+      if(new_alarm_state == (int)3)
+      {
+        Azul.Flash();
+        buzzer(200);
+      }
+      if(new_alarm_state == (int)4)
+      {
+        Blanco.CFlash();
+        buzzer(200);
+      }
+       if(new_alarm_state == (int)5)
+      {
+        Purpura.CFlash();
+        buzzer(200);
+      }
+    }
 }
 //----------------------------------------------------------------------Funcion de vigilancia sobre mensajeria remota desde el servicion de IBM bluemix
 void callback(char* topic, byte* payload, unsigned int payloadLength){//Esta Funcion vigila los mensajes que se reciben por medio de los Topicos de respuesta;
-    SSDEBUG.print(F("callback invoked for topic: "));                    //Imprimir un mensaje seÃ±alando sobre que topico se recibio un mensaje
-    SSDEBUG.println(topic);                                              //Imprimir el Topico
+    //SSDEBUG.print(F("callback invoked for topic: "));                    //Imprimir un mensaje seÃ±alando sobre que topico se recibio un mensaje
+    //SSDEBUG.println(topic);                                              //Imprimir el Topico
   
     if (strcmp (responseTopic, topic) == 0) {                            //verificar si el topico conicide con el Topico responseTopic[] definido en el archivo settings.h local
         handleResponse(payload);
@@ -130,8 +168,8 @@ void callback(char* topic, byte* payload, unsigned int payloadLength){//Esta Fun
     }
     
     if (strcmp (rebootTopic, topic) == 0) {                             //verificar si el topico conicide con el Topico rebootTopic[] definido en el archivo settings.h local
-    SSDEBUG.println(F("Rebooting..."));                                //imprimir mensaje de Aviso sobre reinicio remoto de unidad.
-    ESP.reset();                                                    //Emitir comando de reinicio para ESP8266
+    //SSDEBUG.println(F("Rebooting..."));                                //imprimir mensaje de Aviso sobre reinicio remoto de unidad.
+    ESP.restart();                                                    //Emitir comando de reinicio para ESP8266
     }
 
     if (strcmp (updateTopic, topic) == 0) {                             //verificar si el topico conicide con el Topico updateTopic[] definido en el archivo settings.h local
@@ -144,23 +182,23 @@ PubSubClient client(MQTTServer, 1883, callback, wifiClient);              //se e
 //----------------------------------------------------------------------Funcion de Conexion a Servicio de MQTT
 void mqttConnect() {
   if (!!!client.connected()) {                                         //Verificar si el cliente se encunetra conectado al servicio
-  SSDEBUG.print(F("Reconnecting MQTT client to: "));                    //Si no se encuentra conectado imprimir un mensake de error y de reconexion al servicio
-  SSDEBUG.println(MQTTServer);                                             //Imprimir la direccion del servidor a donde se esta intentado conectar 
+  //SSDEBUG.print(F("Reconnecting MQTT client to: "));                    //Si no se encuentra conectado imprimir un mensake de error y de reconexion al servicio
+  //SSDEBUG.println(MQTTServer);                                             //Imprimir la direccion del servidor a donde se esta intentado conectar 
   char charBuf[30];
   String CID (clientId + NodeID); 
   CID.toCharArray(charBuf, 30);  
   #if defined (internetS)
     while (!!!client.connect(charBuf, "flatboxadmin", "FBx_admin2012")) {                                //Si no se encuentra conectado al servicio intentar la conexion con las credenciales Clientid, Metodo de autenticacion y el Tokeno password
-    SSDEBUG.print(F("."));                                             //imprimir una serie de puntos mientras se da la conexion al servicio
+    //SSDEBUG.print(F("."));                                             //imprimir una serie de puntos mientras se da la conexion al servicio
     Blanco.CFlash();
     }  
   #else
     while (!!!client.connect(charBuf)) {                                //Si no se encuentra conectado al servicio intentar la conexion con las credenciales Clientid, Metodo de autenticacion y el Tokeno password
-    SSDEBUG.print(F("."));                                             //imprimir una serie de puntos mientras se da la conexion al servicio
+    //SSDEBUG.print(F("."));                                             //imprimir una serie de puntos mientras se da la conexion al servicio
     Blanco.CFlash();
     }  
   #endif  
-  SSDEBUG.println();                                                   //dejar un espacio en la terminal para diferenciar los mensajes.
+  //SSDEBUG.println();                                                   //dejar un espacio en la terminal para diferenciar los mensajes.
  }
 }
 
@@ -169,61 +207,62 @@ void MQTTreconnect() {
   int retry = 0;
   // Loop until we're reconnected
   while (!client.connected()) {    
-    SSDEBUG.print(F("Attempting MQTT connection..."));
+    //SSDEBUG.print(F("Attempting MQTT connection..."));
     Blanco.CFlash();
-    buzzer();
+    buzzer(200);
     char charBuf[30];
     String CID (clientId + NodeID);
     CID.toCharArray(charBuf, 30);  
      #if defined (internetS)
      if (client.connect(charBuf, "flatboxadmin", "FBx_admin2012")) {
-      SSDEBUG.println(F("connected"));
+      //SSDEBUG.println(F("connected"));
      }
      #else
      if (client.connect(charBuf)) {
-      SSDEBUG.println(F("connected"));
+      //SSDEBUG.println(F("connected"));
      }
      #endif
      else {
-      Purpura.CFlash();
-      buzzer();
-      SSDEBUG.print(F("failed, rc="));
-      SSDEBUG.print(client.state());
-      SSDEBUG.print(F(" try again in 3 seconds,"));
-      SSDEBUG.print(F(" retry #:"));
-      SSDEBUG.println(retry);
-      if (retry > 10){
+      Azul.Flash();
+      Rojo.Flash();
+      buzzer(200);
+      //SSDEBUG.print(F("failed, rc="));
+      //SSDEBUG.print(client.state());
+      //SSDEBUG.print(F(" try again in 3 seconds,"));
+      //SSDEBUG.print(F(" retry #:"));
+      //SSDEBUG.println(retry);
+      if (retry > 5){
         ESP.restart();
         retry=0;
       }
       retry++;
       // Wait 3 seconds before retrying
-      delay(3000);
+      delay(1000);
     }
   }
 }
 
 //----------------------------------------------------------------------Funcion encargada de subscribir el nodo a los servicio de administracion remota y de notificar los para metros configurables al mismo
 void initManagedDevice() {
-  if (client.subscribe("iotdm-1/response")) {                         //Subscribir el nodo al servicio de mensajeria de respuesta
-    SSDEBUG.println(F("subscribe to responses OK"));                   //si se logro la sibscripcion entonces imprimir un mensaje de exito
+  if (client.subscribe(responseTopic)) {                         //Subscribir el nodo al servicio de mensajeria de respuesta
+    //SSDEBUG.println(F("subscribe to responses OK"));                   //si se logro la sibscripcion entonces imprimir un mensaje de exito
   }
   else {
-    SSDEBUG.println(F("subscribe to responses FAILED"));               //Si no se logra la subcripcion imprimir un mensaje de error
+    //SSDEBUG.println(F("subscribe to responses FAILED"));               //Si no se logra la subcripcion imprimir un mensaje de error
   }
   
   if (client.subscribe(rebootTopic)) {                                //Subscribir el nodo al servicio de mensajeria de reinicio remoto
-    SSDEBUG.println(F("subscribe to reboot OK"));                      //si se logro la sibscripcion entonces imprimir un mensaje de exito
+    //SSDEBUG.println(F("subscribe to reboot OK"));                      //si se logro la sibscripcion entonces imprimir un mensaje de exito
   }
   else {
-    SSDEBUG.println(F("subscribe to reboot FAILED"));                  //Si no se logra la subcripcion imprimir un mensaje de error                
+    //SSDEBUG.println(F("subscribe to reboot FAILED"));                  //Si no se logra la subcripcion imprimir un mensaje de error                
   }
   
-  if (client.subscribe("iotdm-1/device/update")) {                    //Subscribir el nodo al servicio de mensajeria de reinicio remoto
-    SSDEBUG.println(F("subscribe to update OK"));                      //si se logro la sibscripcion entonces imprimir un mensaje de exito
+  if (client.subscribe(updateTopic)) {                    //Subscribir el nodo al servicio de mensajeria de reinicio remoto
+    //SSDEBUG.println(F("subscribe to update OK"));                      //si se logro la sibscripcion entonces imprimir un mensaje de exito
   }
   else {
-    SSDEBUG.println(F("subscribe to update FAILED"));                  //Si no se logra la subcripcion imprimir un mensaje de error         
+    //SSDEBUG.println(F("subscribe to update FAILED"));                  //Si no se logra la subcripcion imprimir un mensaje de error         
   }
   
   StaticJsonBuffer<500> jsonBuffer;
@@ -243,13 +282,13 @@ void initManagedDevice() {
   deviceInfo["IPAddress"]= Sipaddrs;    
   char buff[500];
   root.printTo(buff, sizeof(buff));
-  SSDEBUG.println(F("publishing device manageTopic metadata:"));
-  SSDEBUG.println(buff);
+  //SSDEBUG.println(F("publishing device manageTopic metadata:"));
+  //SSDEBUG.println(buff);
   sent++;
   if (client.publish(manageTopic, buff)) {
-    SSDEBUG.println(F("device Publish ok"));
+    //SSDEBUG.println(F("device Publish ok"));
   }else {
-    SSDEBUG.println(F("device Publish failed:"));
+    //SSDEBUG.println(F("device Publish failed:"));
   }
 }
 
@@ -279,13 +318,13 @@ void sendNTPpacket(IPAddress &address)
 //----------------------------------------------------------------------Funcion para obtener el paquee de TP y procesasr la fecha hora desde el servidor de NTP
 time_t getNtpTime(){
   while (udp.parsePacket() > 0) ; // discard any previously received packets
-  SSDEBUG.println(F("Transmit NTP Request"));
+  //SSDEBUG.println(F("Transmit NTP Request"));
   sendNTPpacket(timeServer);
   uint32_t beginWait = millis();
   while (millis() - beginWait < 1500) {
     int size = udp.parsePacket();
     if (size >= NTP_PACKET_SIZE) {
-      SSDEBUG.println(F("Receive NTP Response"));
+      //SSDEBUG.println(F("Receive NTP Response"));
       NTP = true;
       udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
       unsigned long secsSince1900;
@@ -297,7 +336,9 @@ time_t getNtpTime(){
       return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
     }
   }
-  SSDEBUG.println(F("No NTP Response :-("));
+  Rojo.Flash();
+  Verde.Flash();
+  //SSDEBUG.println(F("No NTP Response :-("));
   return 0; // return 0 if unable to get the time
 }
 
@@ -305,14 +346,14 @@ time_t getNtpTime(){
 //----------------------------------------------------------------------anager function. Configure the wifi connection if not connect put in mode AP--------//
 void wifimanager() {
   WiFiManager wifiManager;
-  SSDEBUG.println(F("empezando"));
-  Purpura.COn();
+  //SSDEBUG.println(F("empezando"));
+  Azul.Flash();
   if (!  wifiManager.autoConnect("flatwifi")) {
-    Purpura.CFlash();
+    Rojo.On();
+    Azul.On();
     if (!wifiManager.startConfigPortal("flatwifi")) {
       //reset and try again, or maybe put it to deep sleep
-      ESP.reset();
-      delay(5 * UInterval);
+      ESP.restart();
     }
   }
 }
@@ -320,12 +361,11 @@ void wifimanager() {
 //----------------------------------------------------------------------anager function. Configure the wifi connection if not connect put in mode AP--------//
 void OnDemandWifimanager() {
   WiFiManager wifiManager;
-  SSDEBUG.println(F("Empezando Configuracion de WIFI Bajo Demanda"));
+  //SSDEBUG.println(F("Empezando Configuracion de WIFI Bajo Demanda"));
   Purpura.COn();
   if (!wifiManager.startConfigPortal("flatwifi")) {
     //reset and try again, or maybe put it to deep sleep
-    ESP.reset();
-    delay(5 * UInterval);
+    ESP.restart();
   }
 }
 //-----------------------------------------------------------------------------------Setting up ESP8266 scketch
@@ -333,6 +373,7 @@ void setup() {
   pinMode(beep, OUTPUT);
   digitalWrite(beep, LOW);
   Blanco.COff();
+  Verde.On();
   SSDEBUG.begin(9600);
   Serial.begin(115200);
   SSDEBUG.println(F("")); 
@@ -356,35 +397,39 @@ void setup() {
     wifimanager();
     delay(UInterval);
   }
-  SSDEBUG.print(F("Wifi conectado, Direccion de IP Asignado: "));
+  SSDEBUG.println(WiFi.SSID());
+  SSDEBUG.println(WiFi.RSSI());
+  //SSDEBUG.print(F("Wifi conectado, Direccion de IP Asignado: "));
   SSDEBUG.println(WiFi.localIP());
   Sipaddrs = WiFi.localIP().toString();
-  SSDEBUG.print(F("Direccion de MAC Asignado: "));
+  //SSDEBUG.print(F("Direccion de MAC Asignado: "));
   SSDEBUG.println(WiFi.macAddress());
   Smacaddrs = String(WiFi.macAddress());
   SSDEBUG.println(F(""));                                                         //dejamos una linea en blanco en la terminal 
+  Verde.Off();
   //una vez contados al Wifi nos aseguramos tener la hora correcta simepre
-  SSDEBUG.println(F("Connected to WiFi, sincronizando con el NTP;"));                    //mensaje de depuracion para saber que se intentara obtner la hora
+  //SSDEBUG.println(F("Connected to WiFi, sincronizando con el NTP;"));                    //mensaje de depuracion para saber que se intentara obtner la hora
   //--------------------------------------------------------------------------Configuracion de NTP
-  SSDEBUG.print(F("servidor de NTP:"));
-  SSDEBUG.println(ntpServerName);
+  //SSDEBUG.print(F("servidor de NTP:"));
+  //SSDEBUG.println(ntpServerName);
   //--------------------------------------------------------------------------Configuracion de UDP
-  SSDEBUG.println("Starting UDP");
+  //SSDEBUG.println("Starting UDP");
   udp.begin(localPort);
-  SSDEBUG.print("Local port: ");
-  SSDEBUG.println(udp.localPort());
+  //SSDEBUG.print("Local port: ");
+  //SSDEBUG.println(udp.localPort());
+  Blanco.COff();
   while (NTP == false) {
     setSyncProvider(getNtpTime);                                                          //iniciamos la mensajeria de UDP para consultar la hora en el servicio de NTP remoto (el servidor se configura en 
     delay(UInterval);
   }
   NTP = false;
   //--------------------------------------------------------------------------Connectando a servicio de MQTT
-  SSDEBUG.println(F("Time Sync, Connecting to mqtt sevrer"));
+  //SSDEBUG.println(F("Time Sync, Connecting to mqtt sevrer"));
   mqttConnect();                                                            //Conectamos al servicio de Mqtt con las credenciales provistas en el archivo "settings.h"
-  SSDEBUG.println(F("Mqtt Connection Done!, sending Device Data"));
+  //SSDEBUG.println(F("Mqtt Connection Done!, sending Device Data"));
   //--------------------------------------------------------------------------Enviando datos de primera conexion
   initManagedDevice();                                                      //inciamos la administracion remota desde Bluemix
-  SSDEBUG.println(F("Finalizing Setup"));                                    //enviamos un mensaje de depuracion
+  //SSDEBUG.println(F("Finalizing Setup"));                                    //enviamos un mensaje de depuracion
   Blanco.COff();
   fsm_state = STATE_IDLE; //inciar el estado del la maquina de stado finito
   //*****************************************************************************************************Iniciar la Lectora en modo de TEST******************************
@@ -411,15 +456,15 @@ void publishRF_ID_Manejo (String IDModulo,String MSG,float vValue,int RSSIV, int
   Ddata["Ip"] = SIpAd;
   char MqttDevicedata[300];
   root.printTo(MqttDevicedata, sizeof(MqttDevicedata));
-  SSDEBUG.println(F("publishing device data to manageTopic:"));
-  SSDEBUG.println(MqttDevicedata);
+  //SSDEBUG.println(F("publishing device data to manageTopic:"));
+  //SSDEBUG.println(MqttDevicedata);
   sent++;
   if (client.publish(manageTopic, MqttDevicedata)) {
-     SSDEBUG.println(F("enviado data de dispositivo:OK"));
+     //SSDEBUG.println(F("enviado data de dispositivo:OK"));
      published ++;
      failed = 0; 
   }else {
-    SSDEBUG.print(F("enviado data de dispositivo:FAILED"));
+    //SSDEBUG.print(F("enviado data de dispositivo:FAILED"));
     failed ++;
   }
 }
@@ -434,7 +479,7 @@ void readTag() {
     if ((T == '\n') && (RECORD)) {
       RECORD = LOW;
       if(LAST_ID!=CARD_ID){
-        SSDEBUG.println(CARD_ID);
+        //SSDEBUG.println(CARD_ID);
       }
       Serial.write(0x7f);
       delay(50);
@@ -490,7 +535,7 @@ void NormalReset(){
 void checkalarms (){
       if (WiFi.RSSI() < -85){
         if(BeepSignalWarning < 4){
-          buzzer();
+          buzzer(200);
           BeepSignalWarning++;
         }
         Blanco.CFlash();
@@ -505,7 +550,7 @@ void LocalWarning (){
       if (flashWarning == true){
         Rojo.Flash();
         if(BeepBatteryWarning < 4){
-        buzzer();
+        buzzer(200);
         BeepBatteryWarning ++;
         }
         }else{
@@ -526,16 +571,16 @@ void updateDeviceInfo(){
   if (WiFi.RSSI() < -75){
     msg = ("LOWiFi");
     Rojo.Flash();
-    buzzer();
-    SSDEBUG.print(WiFi.SSID());
-    SSDEBUG.print(" ");
-    SSDEBUG.println(WiFi.RSSI());
+    buzzer(200);
+    //SSDEBUG.print(WiFi.SSID());
+    //SSDEBUG.print(" ");
+    //SSDEBUG.println(WiFi.RSSI());
     fsm_state = STATE_TRANSMIT_ALARM_UPDATE; //publishRF_ID_Manejo(NodeID, msg, VBat, WifiSignal, published, failed, ISO8601, Smacaddrs, Sipaddrs);        //publishRF_ID_Manejo (String IDModulo,String MSG,float vValue, int fail,String Tstamp)
     return;
   }
   if (Bateria() < BATTRESHHOLD ){
     flashWarning = true;
-    buzzer();
+    buzzer(200);
     msg = ("LowBat");
     if (BatWarningSent == false){
       fsm_state = STATE_TRANSMIT_ALARM_UPDATE; //publishRF_ID_Manejo(NodeID, msg, VBat, WifiSignal, published, failed, ISO8601, Smacaddrs, Sipaddrs);
@@ -562,13 +607,13 @@ void CheckTime(){ //digital clock display of the time
       ISO8601 += day();
       ISO8601 +="T";
       if ((hour() >= 0)&& (hour() < 10)){
-        //SSDEBUG.print(F("+0:"));
-        //SSDEBUG.println(hour());
+        ////SSDEBUG.print(F("+0:"));
+        ////SSDEBUG.println(hour());
         ISO8601 +="0";
         ISO8601 += hour();
       }else{
-        //SSDEBUG.print(F("hora:"));
-        //SSDEBUG.println(hour());
+        ////SSDEBUG.print(F("hora:"));
+        ////SSDEBUG.println(hour());
         ISO8601 += hour();
       }
       ISO8601 += ":";
@@ -595,25 +640,25 @@ void publishRF_ID_Lectura(String IDModulo, String Tstamp, String tagread) {
     tagdata["Tag"] = tagread;
     char MqttTagdata[250];
     root.printTo(MqttTagdata, sizeof(MqttTagdata));
-    SSDEBUG.println(F("publishing Tag data to publishTopic:")); 
-    SSDEBUG.println(MqttTagdata);
+    //SSDEBUG.println(F("publishing Tag data to publishTopic:")); 
+    //SSDEBUG.println(MqttTagdata);
     sent ++;
     if (client.publish(publishTopic, MqttTagdata)){
-      SSDEBUG.println(F("enviado data de RFID: OK"));
+      //SSDEBUG.println(F("enviado data de RFID: OK"));
       Verde.Flash();
-      buzzer();
+      buzzer(200);
       published ++;
       inputString = "";
       failed = 0; 
       }else {
-        SSDEBUG.println(F("enviado data de RFID: FAILED"));
+        //SSDEBUG.println(F("enviado data de RFID: FAILED"));
         Rojo.Flash();
         failed ++;
         OldTagRead = "1";
         inputString = "";
       }
   }else{
-    SSDEBUG.println("Este es una lectura consecutiva");
+    //SSDEBUG.println("Este es una lectura consecutiva");
   }
 }
 
@@ -667,20 +712,20 @@ void loop() {
         MQTTreconnect();
     }
 
-    SSDEBUG.println(F("CARD DATA SENT"));
+    //SSDEBUG.println(F("CARD DATA SENT"));
     CheckTime();
     publishRF_ID_Lectura(NodeID,ISO8601,inputString);
     fsm_state = STATE_IDLE; 
     break;
     //**************************************************************************************************STATE_UPDATE*****************************************************
     case STATE_UPDATE:
-    SSDEBUG.println(F("STATE_UPDATE"));
+    //SSDEBUG.println(F("STATE_UPDATE"));
     updateDeviceInfo();
     fsm_state = STATE_TRANSMIT_DEVICE_UPDATE;
     break;
     //**************************************************************************************************STATE_TRANSMIT_DEVICE_UPDATE*************************************
     case STATE_TRANSMIT_DEVICE_UPDATE:
-    SSDEBUG.println(F("STATE_TRANSMIT_DEVICE_UPDATE"));
+    //SSDEBUG.println(F("STATE_TRANSMIT_DEVICE_UPDATE"));
     //verificar que el cliente de Conexion al servicio se encuentre conectado
     if (!client.connected()) {
         MQTTreconnect();
@@ -692,7 +737,7 @@ void loop() {
     break;
     //**************************************************************************************************STATE_TRANSMIT_ALARM_UPDATE**************************************
     case STATE_TRANSMIT_ALARM_UPDATE:
-    SSDEBUG.println(F("STATE_TRANSMIT_ALARM_UPDATE"));
+    //SSDEBUG.println(F("STATE_TRANSMIT_ALARM_UPDATE"));
     //verificar que el cliente de Conexion al servicio se encuentre conectado
     if (!client.connected()) {
         MQTTreconnect();
@@ -703,10 +748,10 @@ void loop() {
     break;
     //**************************************************************************************************STATE_UPDATE_TIME************************************************
     case STATE_UPDATE_TIME:
-    SSDEBUG.println(F("Starting UDP"));
+    //SSDEBUG.println(F("Starting UDP"));
     udp.begin(localPort);
-    SSDEBUG.print(("Local port: "));
-    SSDEBUG.println(udp.localPort());
+    //SSDEBUG.print(("Local port: "));
+    //SSDEBUG.println(udp.localPort());
     while (NTP == false) {
         setSyncProvider(getNtpTime);                                                                    //iniciamos la mensajeria de UDP para consultar la hora en el servicio de NTP remoto (el servidor se configura en 
         delay(UInterval);
