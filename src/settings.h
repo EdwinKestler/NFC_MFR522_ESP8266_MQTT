@@ -19,7 +19,7 @@
 //-------- Customise these values-----------
 
 char MQTTServer [] = internetS;
-String FirmwareVersion= "V1.00";                                        //read in chage history
+String FirmwareVersion= "V1.1";                                        //read in chage history
 String HardwareVersion= "V2.00";                                        //read in chage history 
 //---------Blurmix Topics---------------------
 

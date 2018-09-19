@@ -375,6 +375,9 @@ void setup() {
   Blanco.COff();
   Verde.On();
   SSDEBUG.begin(9600);
+  delay(5000);
+  Verde.Off();
+  Azul.On();
   Serial.begin(115200);
   SSDEBUG.println(F("")); 
   SSDEBUG.println(F("Inicializacion de programa de boton con identificacion RFID;"));
@@ -471,7 +474,7 @@ void publishRF_ID_Manejo (String IDModulo,String MSG,float vValue,int RSSIV, int
 //------------------------------------------------------------------------------------Leer la tarjeta que se presenta
 void readTag() {
   if( Serial.available()){
-    Serial.write(0x02);
+      Serial.write(0x02);
     char T = Serial.read();
     if ((T != '\n') && (RECORD)) {
       CARD_ID += T;
@@ -479,14 +482,16 @@ void readTag() {
     if ((T == '\n') && (RECORD)) {
       RECORD = LOW;
       if(LAST_ID!=CARD_ID){
-        //SSDEBUG.println(CARD_ID);
+        SSDEBUG.println(CARD_ID);
       }
       Serial.write(0x7f);
       delay(50);
       Serial.write(0x0c);
       delay(50);
       Serial.write(0xf7);
-      delay(100);
+      delay(250);
+    
+         
       inputString = CARD_ID;
       Azul.Flash();
       LAST_ID = CARD_ID;
@@ -693,14 +698,6 @@ void loop() {
         ESP.restart();
     }
 
-     if ( millis() - Check_connection_mqtt > 5 * UInterval){
-       Check_connection_mqtt = millis();
-       //verificar que el cliente de Conexion al servicio se encuentre conectado
-       if (!client.connected()) {
-         MQTTreconnect();
-       }
-       client.loop();
-     }
      
     break;
     //**************************************************************************************************STATE_TRANSMIT_CARD_DATA*****************************************
@@ -760,5 +757,15 @@ void loop() {
     fsm_state = STATE_IDLE; 
     break;
     }
+
+     if ( millis() - Check_connection_mqtt > 5 * UInterval){
+       Check_connection_mqtt = millis();
+       //verificar que el cliente de Conexion al servicio se encuentre conectado
+       if (!client.connected()) {
+         MQTTreconnect();
+       }
+       client.loop();
+     }
+
     yield();
 }
