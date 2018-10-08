@@ -9,8 +9,8 @@
 #define TOKEN "hY5OOupZk*U1yMl1G8"
 //-------- Customise the above values --------
 
-#define internetS   "adnode.flatbox.io"
-//#define Cayala      "10.130.19.250"
+//#define internetS   "adnode.flatbox.io"
+#define USAC      "169.254.45.30"
 //#define MiraFlores  "10.130.14.240"
 //#define Fraijanes   "10.130.15.245"
 //#define Zona9       "10.130.12.210"
@@ -18,9 +18,9 @@
 
 //-------- Customise these values-----------
 
-char MQTTServer [] = internetS;
-String FirmwareVersion= "V1.1";                                        //read in chage history
-String HardwareVersion= "V2.00";                                        //read in chage history 
+char MQTTServer [] = USAC;
+String FirmwareVersion= "V1.2a";                                        //read in chage history
+String HardwareVersion= "V2.00";                                              //read in chage history 
 //---------Blurmix Topics---------------------
 
 const char publishTopic[] =     "iot-2/evt/status/fmt/NFC/json";
@@ -37,8 +37,8 @@ const char rebootTopic[] =      "iotdm-1/mgmt/initiate/device/reboot/NFC";
        unsigned int localPort = 2390;  // local port to listen for UDP packets
        const int timeZone = -6;  // Eastern central Time (USA)
 #else
-      IPAddress timeServer(172, 20,  1,235); // time.nist.gov NTP server IPAddress timeServer(192,168,120,211);
-      const char* ntpServerName = "172.20.1.235"; //const char* ntpServerName = "192.168.120.211";
+      IPAddress timeServer(169,254, 45, 30); // time.nist.gov NTP server IPAddress timeServer(192,168,120,211);
+      const char* ntpServerName = "169.254.45.30"; //const char* ntpServerName = "192.168.120.211";
       unsigned int localPort = 2390;  // local port to listen for UDP packets
       const int timeZone = -6;  // Eastern central Time (USA)
 #endif

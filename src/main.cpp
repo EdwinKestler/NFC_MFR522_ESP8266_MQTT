@@ -75,7 +75,9 @@ String  Sipaddrs  = "000.000.000.000";
 unsigned long lastUPDATEMillis;                                       //Variable para llevar conteo del tiempo desde la ultima publicacion 
 unsigned long lastwarning;                                         //Variable para llevar conteo del tiempo desde la ultima publicacion 
 unsigned long lastNResetMillis;                                       //Variable para llevar conteo del tiempo desde la ultima publicacion
-unsigned long Check_connection_mqtt;                                                                    //Variable donde se define cada cuanto se chequea conecion conel servidor de mqtt 
+unsigned long Check_connection_mqtt;                                  //Variable donde se define cada cuanto se chequea conecion conel servidor de mqtt 
+unsigned long timerEnvioDatos;
+
 String ISO8601;                                                       //Variable para almacenar la marca del timepo (timestamp) de acuerdo al formtao ISO8601
 int hora = 0;
 //----------------------------------------------------------------------definir Parametros de Lector de RFID
@@ -484,14 +486,12 @@ void readTag() {
       if(LAST_ID!=CARD_ID){
         SSDEBUG.println(CARD_ID);
       }
-      Serial.write(0x7f);
+      /*Serial.write(0x7f);
       delay(50);
       Serial.write(0x0c);
       delay(50);
       Serial.write(0xf7);
-      delay(250);
-    
-         
+      delay(250);*/
       inputString = CARD_ID;
       Azul.Flash();
       LAST_ID = CARD_ID;
@@ -666,6 +666,17 @@ void publishRF_ID_Lectura(String IDModulo, String Tstamp, String tagread) {
     //SSDEBUG.println("Este es una lectura consecutiva");
   }
 }
+//******************************************************************************************************si va funcionar
+void RESET()
+{
+  if (millis() - timerEnvioDatos > 9000) 
+  {
+    timerEnvioDatos=millis();
+    Serial.write(0x02);
+    delay(55);
+    //SSDEBUG.println("RESETED");
+  }
+}
 
 //*******************************************************************************************************VOID LOOP*******************************************************
 void loop() {
@@ -698,6 +709,7 @@ void loop() {
         ESP.restart();
     }
 
+    RESET();
      
     break;
     //**************************************************************************************************STATE_TRANSMIT_CARD_DATA*****************************************
