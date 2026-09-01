@@ -1,783 +1,972 @@
-
 /*
-  Created by Edwin Kestler, & Dennis Revolorio sept 07 , 2018.
-  @flatbox Guatemala Centro America.
-  Released into the public domain under GPLv3.
+  NFC RFID node — ESP8266 (Wemos D1 mini)
+
+  Created by Edwin Kestler & Dennis Revolorio, 2018.
+  Refactored to a non-blocking OOP state machine.
+
+  Flow: Boot → WiFi → NTP → MQTT subscribe → Idle
+  Idle publishes tag reads, periodic health, and queued remote alarms.
 */
 
 #include <Arduino.h>
-// Librerias de ESP // MQTT/ JSON FORMAT data
-#include <ESP8266WiFi.h>                                              //Libreira de ESPCORE ARDUINO
-#include <PubSubClient.h>                                             //https://github.com/knolleary/pubsubclient/releases/tag/v2.3
-#include <ArduinoJson.h>                                              //https://github.com/bblanchon/ArduinoJson/releases/tag/v5.0.7
-//----------------------------------------------------------------------librerias de TIEMPO NTP
-#include <TimeLibEsp.h>                                                  //TimeTracking
-#include <WiFiUdp.h>                                                  //UDP packet handling for NTP request
-//----------------------------------------------------------------------Librerias de manejo de setup de redes 
-#include <ESP8266WebServer.h>                                         //Libreira de html para ESP8266
-#include <DNSServer.h>                                                //Libreria de DNS para resolucion de Nombres
-#include <WiFiManager.h>                                              //https://github.com/tzapu/WiFiManager
-//----------------------------------------------------------------------Librerias de Codigo de Lectora RFID
+#include <ESP8266WiFi.h>
+#include <ArduinoJson.h>
+#include "mqtt5_client.h"
+#include <TimeLibEsp.h>
+#include <WiFiUdp.h>
+#include <ESP8266WebServer.h>
+#include <DNSServer.h>
+#include <WiFiManager.h>
 #include <SoftwareSerial.h>
+#include <string.h>
+#include <stdio.h>
+
 #include "settings.h"
-//----------------------------------------------------------------------Libreria locales de clases de botron y LEDS
-#include <BlinkRGB.h>
-//---------------------------------------------------------------------------------RGB Settings
-BlinkRGB Azul (D6);
-BlinkRGB Verde (D7);
-BlinkRGB Rojo (D8);
+#include "hardware.h"
+#include "debug.h"
 
-BlinkColor Blanco  (D6,D7,D8);
-BlinkColor Purpura (D6,D4,D8);
+SoftwareSerial DebugSerial(PIN_DBG_RX, PIN_DBG_TX, false, 256);
 
-//----------------------------------------------------------------------------------Buzzer Settings
-const int beep = D5;
-//----------------------------------------------------------------------------------RFID Settings
-String Analisis = "";
-String CARD_ID = "";
-String LAST_ID = "";
-bool RECORD=LOW;
-SoftwareSerial SSDEBUG(D1, D2, false, 256); // Rx, Tx
-//----------------------------------------------------------------------------------json Data
-String msg = "";
-int WifiSignal;
-//----------------------------------------------------------------------Poner el Pin de ADC en modo de sensar el voltaje da la bateria
-int AnalogVCCPin = A0;                                              //Se opne el pin A0 en modo de Lectura interna 1.8V
-float VBat = 0;
-boolean BatWarningSent = false;
-boolean flashWarning = false;
-//----------------------------------------------------------------------Variables de verificacion de fallas de capa de conexion con servicio
-int failed, sent, published;                                          //Variables de conteo de envios 
-int BeepBatteryWarning = 0;
-int BeepSignalWarning =0;
-//------------------------------------------------------------------------------------FSM Settings
-#define STATE_IDLE                    0
-#define STATE_TRANSMIT_CARD_DATA      1
-#define STATE_UPDATE                  2
-#define STATE_TRANSMIT_ALARM_UPDATE   3
-#define STATE_TRANSMIT_DEVICE_UPDATE  4
-#define STATE_UPDATE_TIME             5
-int fsm_state;
-//----------------------------------------------------------------------Inicio de cliente UDP
-WiFiUDP udp;                                                          //Cliente UDP para WIFI
-//----------------------------------------------------------------------Codigo para estblecer el protocolo de tiempo en red NTP
-const int NTP_PACKET_SIZE = 48;                                       //NTP time is in the first 48 bytes of message
-byte packetBuffer[NTP_PACKET_SIZE];                                   //Buffer to hold incoming & outgoing packets
-boolean NTP = false;                                                  //Bandera que establece el estado inicial del valor de NTP
-//----------------------------------------------------------------------Variables del servicio de envio de datos MQTT
-const char* cserver = "";
-//char authMethod[] = "use-token-auth";                                 //Tipo de Autenticacion para el servicio de Bluemix (la calve es unica por cada nodo)
-//char token[] = TOKEN;                                                 //Variable donde se almacena el Token provisto por el servicio (ver Settings.h)
-char clientId[] = "d:" ORG ":" DEVICE_TYPE ":" DEVICE_ID;             //Variable de Identificacion de Cliente para servicio de MQTT Bluemix 
-String  Smacaddrs = "00:00:00:00:00:00";
-String  Sipaddrs  = "000.000.000.000";
-//----------------------------------------------------------------------Declaracion de Variables Globales (procuar que sean las minimas requeridas.)
-unsigned long lastUPDATEMillis;                                       //Variable para llevar conteo del tiempo desde la ultima publicacion 
-unsigned long lastwarning;                                         //Variable para llevar conteo del tiempo desde la ultima publicacion 
-unsigned long lastNResetMillis;                                       //Variable para llevar conteo del tiempo desde la ultima publicacion
-unsigned long Check_connection_mqtt;                                  //Variable donde se define cada cuanto se chequea conecion conel servidor de mqtt 
-unsigned long timerEnvioDatos;
+static const char kWifiApName[] = "flatwifi";
+static const char kMqttUser[]   = "flatboxadmin";
+static const char kMqttPass[]   = "FBx_admin2012";
+static const uint8_t kNtpPacketSize = 48;
 
-String ISO8601;                                                       //Variable para almacenar la marca del timepo (timestamp) de acuerdo al formtao ISO8601
-int hora = 0;
-//----------------------------------------------------------------------definir Parametros de Lector de RFID
-unsigned long RetardoLectura;
-String OldTagRead = "1";                                                    //VAriable para guardar la ultima tag leida y evitar lecturas consecutivas
-String inputString;
+enum class AppState : uint8_t {
+  WaitNtp,
+  MqttConnect,
+  Idle,
+  TransmitCard,
+  UpdateDevice,
+  TransmitDevice,
+  TransmitAlarm,
+  SyncTime,
+  MqttReconnect
+};
 
-//----------------------------------------------------------------------Variables Para el boton de emergencia
-int IdEventoT= 0;
-//----------------------------------------------------------------------Variables Propias del CORE ESP8266 Para la administracion del Modulo
-String NodeID = String(ESP.getChipId());                              //Variable Global que contiene la identidad del nodo (ChipID) o numero unico
-//------------------------------------------------------------------------------------denifinir el sonido de bocina
-void buzzer(int delay_buzz) {
-  digitalWrite(beep, HIGH);
-  delay(delay_buzz);
-  digitalWrite(beep, LOW);
-}
-//----------------------------------------------------------------------Funcion remota para administrar las actulizaciones remotas de las variables configurables desde IBMbluemix
-void handleUpdate(byte* payload) {                                    //La Funcion recibe lo que obtenga Payload de la Funcion Callback que vigila el Topico de subcripcion (Subscribe TOPIC)
-    StaticJsonBuffer<300> jsonBuffer;                                  //Se establece un Buffer de 1o suficientemente gande para almacenar los menasajes JSON
-    JsonObject& root = jsonBuffer.parseObject((char*)payload);          //Se busca la raiz del mensaje Json convirtiendo los Bytes del Payload a Caracteres en el buffer
-    if (!root.success()) {                                              //Si no se encuentra el objeto Raiz del Json
-        //SSDEBUG.println(F("ERROR en la Letura del JSON Entrante"));        //Se imprime un mensaje de Error en la lectura del JSON
-        return;                                                           //Nos salimos de la funcion
-    }                                                                //se cierra el condicional
-    //SSDEBUG.println(F("handleUpdate payload:"));                         //si se pudo encontrar la raiz del objeto JSON se imprime u mensje
-    //root.prettyPrintTo(SSDEBUG);                                         //y se imprime el mensaje recibido al Serial  
-    //SSDEBUG.println();                                                   //dejamos una linea de pormedio para continuar con los mensajes de debugging
-}
-//----------------------------------------------------------------------Funcion remota para mandar a dormir el esp despues de enviar un RFID
-void handleResponse (byte* payloadrsp) {
-    StaticJsonBuffer<200> jsonBuffer;                                   //Se establece un Buffer de 1o suficientemente gande para almacenar los menasajes JSON
-    JsonObject& root = jsonBuffer.parseObject((char*)payloadrsp);       //Se busca la raiz del mensaje Json convirtiendo los Bytes del Payload a Caracteres en el buffer
-    if (!root.success()) {                                                                              //Si no se encuentra el objeto Raiz del Json
-        //SSDEBUG.println(F("ERROR en la Letura del JSON Entrante"));        //Se imprime un mensaje de Error en la lectura del JSON
-        return;                                                           //Nos salimos de la funcion
-    }                                                                   //se cierra el condicional
-
-    //SSDEBUG.println(F("handleResponse payload:"));                       //si se pudo encontrar la raiz del objeto JSON se imprime u mensje
-    root.prettyPrintTo(SSDEBUG);                                         //y se imprime el mensaje recibido al Serial  
-    //SSDEBUG.println();                                                   //dejamos una linea de pormedio para continuar con los mensajes de debugging
-
-    const char* Chip_ID = root["CHIPID"];                             // buscamos el valor del objeto dentro del Json
-    unsigned int new_alarm_state = root["ALARM_STATE"];              // buscamos en en un arreglo de objetos en la posicion 0
-    //SSDEBUG.println("los datos recibidos son:");
-    //SSDEBUG.print(F("Tipo de sensor: "));
-    //SSDEBUG.println(Chip_ID);                                             //imprimimos las valores recibidos en variables
-    String C_ID = String(Chip_ID);
-    if (C_ID == NodeID )
-    {
-      //SSDEBUG.print(F("nuevo estado de alarma:"));                               //imprimimos las valores recibidos en variables
-      //SSDEBUG.println(new_alarm_state);                                  //imprimimos las valores recibidos en variables
-      if(new_alarm_state == (int)1)
-      {
-        Rojo.Flash();
-        buzzer(500);
-        delay(50);
-        buzzer(500);
-      }
-      if(new_alarm_state == (int)2)
-      {
-        Verde.Flash();
-        buzzer(200);
-      }
-      if(new_alarm_state == (int)3)
-      {
-        Azul.Flash();
-        buzzer(200);
-      }
-      if(new_alarm_state == (int)4)
-      {
-        Blanco.CFlash();
-        buzzer(200);
-      }
-       if(new_alarm_state == (int)5)
-      {
-        Purpura.CFlash();
-        buzzer(200);
-      }
-    }
-}
-//----------------------------------------------------------------------Funcion de vigilancia sobre mensajeria remota desde el servicion de IBM bluemix
-void callback(char* topic, byte* payload, unsigned int payloadLength){//Esta Funcion vigila los mensajes que se reciben por medio de los Topicos de respuesta;
-    //SSDEBUG.print(F("callback invoked for topic: "));                    //Imprimir un mensaje seÃ±alando sobre que topico se recibio un mensaje
-    //SSDEBUG.println(topic);                                              //Imprimir el Topico
-  
-    if (strcmp (responseTopic, topic) == 0) {                            //verificar si el topico conicide con el Topico responseTopic[] definido en el archivo settings.h local
-        handleResponse(payload);
-        //return; // just print of response for now                         //Hacer algo si conicide (o en este caso hacer nada)
-    }
-    
-    if (strcmp (rebootTopic, topic) == 0) {                             //verificar si el topico conicide con el Topico rebootTopic[] definido en el archivo settings.h local
-    //SSDEBUG.println(F("Rebooting..."));                                //imprimir mensaje de Aviso sobre reinicio remoto de unidad.
-    ESP.restart();                                                    //Emitir comando de reinicio para ESP8266
-    }
-
-    if (strcmp (updateTopic, topic) == 0) {                             //verificar si el topico conicide con el Topico updateTopic[] definido en el archivo settings.h local
-    handleUpdate(payload);                                            //enviar a la funcion handleUpdate el contenido del mensaje para su parseo.
-    }
-}
-//----------------------------------------------------------------------definicion de Cliente WIFI para ESP8266 y cliente de publicacion y subcripcion
-WiFiClient wifiClient;                                                //Se establece el Cliente Wifi
-PubSubClient client(MQTTServer, 1883, callback, wifiClient);              //se establece el Cliente para el servicio MQTT
-//----------------------------------------------------------------------Funcion de Conexion a Servicio de MQTT
-void mqttConnect() {
-  if (!!!client.connected()) {                                         //Verificar si el cliente se encunetra conectado al servicio
-  //SSDEBUG.print(F("Reconnecting MQTT client to: "));                    //Si no se encuentra conectado imprimir un mensake de error y de reconexion al servicio
-  //SSDEBUG.println(MQTTServer);                                             //Imprimir la direccion del servidor a donde se esta intentado conectar 
-  char charBuf[30];
-  String CID (clientId + NodeID); 
-  CID.toCharArray(charBuf, 30);  
-  #if defined (internetS)
-    while (!!!client.connect(charBuf, "flatboxadmin", "FBx_admin2012")) {                                //Si no se encuentra conectado al servicio intentar la conexion con las credenciales Clientid, Metodo de autenticacion y el Tokeno password
-    //SSDEBUG.print(F("."));                                             //imprimir una serie de puntos mientras se da la conexion al servicio
-    Blanco.CFlash();
-    }  
-  #else
-    while (!!!client.connect(charBuf)) {                                //Si no se encuentra conectado al servicio intentar la conexion con las credenciales Clientid, Metodo de autenticacion y el Tokeno password
-    //SSDEBUG.print(F("."));                                             //imprimir una serie de puntos mientras se da la conexion al servicio
-    Blanco.CFlash();
-    }  
-  #endif  
-  //SSDEBUG.println();                                                   //dejar un espacio en la terminal para diferenciar los mensajes.
- }
+static const char* stateName(AppState s) {
+  switch (s) {
+    case AppState::WaitNtp:        return "WAIT_NTP";
+    case AppState::MqttConnect:    return "MQTT_CONNECT";
+    case AppState::Idle:           return "IDLE";
+    case AppState::TransmitCard:   return "TX_CARD";
+    case AppState::UpdateDevice:   return "UPDATE_DEV";
+    case AppState::TransmitDevice: return "TX_DEVICE";
+    case AppState::TransmitAlarm:  return "TX_ALARM";
+    case AppState::SyncTime:       return "SYNC_TIME";
+    case AppState::MqttReconnect:  return "MQTT_RECONNECT";
+    default:                       return "?";
+  }
 }
 
-//----------------------------------------------------------------------Funcion de REConexion a Servicio de MQTT
-void MQTTreconnect() {
-  int retry = 0;
-  // Loop until we're reconnected
-  while (!client.connected()) {    
-    //SSDEBUG.print(F("Attempting MQTT connection..."));
-    Blanco.CFlash();
-    buzzer(200);
-    char charBuf[30];
-    String CID (clientId + NodeID);
-    CID.toCharArray(charBuf, 30);  
-     #if defined (internetS)
-     if (client.connect(charBuf, "flatboxadmin", "FBx_admin2012")) {
-      //SSDEBUG.println(F("connected"));
-     }
-     #else
-     if (client.connect(charBuf)) {
-      //SSDEBUG.println(F("connected"));
-     }
-     #endif
-     else {
-      Azul.Flash();
-      Rojo.Flash();
-      buzzer(200);
-      //SSDEBUG.print(F("failed, rc="));
-      //SSDEBUG.print(client.state());
-      //SSDEBUG.print(F(" try again in 3 seconds,"));
-      //SSDEBUG.print(F(" retry #:"));
-      //SSDEBUG.println(retry);
-      if (retry > 5){
-        ESP.restart();
-        retry=0;
-      }
-      retry++;
-      // Wait 3 seconds before retrying
-      delay(1000);
+class Feedback {
+ public:
+  void begin() {
+    pinMode(PIN_BUZZER, OUTPUT);
+    digitalWrite(PIN_BUZZER, LOW);
+    pinMode(PIN_LED_R, OUTPUT);
+    pinMode(PIN_LED_G, OUTPUT);
+    pinMode(PIN_LED_B, OUTPUT);
+    leds(false, false, false);
+  }
+
+  void leds(bool r, bool g, bool b) {
+    digitalWrite(PIN_LED_R, r ? HIGH : LOW);
+    digitalWrite(PIN_LED_G, g ? HIGH : LOW);
+    digitalWrite(PIN_LED_B, b ? HIGH : LOW);
+  }
+
+  void off() {
+    leds(false, false, false);
+    digitalWrite(PIN_BUZZER, LOW);
+    ledUntilMs_ = 0;
+    buzzUntilMs_ = 0;
+    remainingBeeps_ = 0;
+  }
+
+  void solid(bool r, bool g, bool b) {
+    leds(r, g, b);
+    ledUntilMs_ = 0;
+  }
+
+  void flash(bool r, bool g, bool b, uint16_t onMs = LED_FLASH_MS) {
+    leds(r, g, b);
+    ledUntilMs_ = millis() + onMs;
+  }
+
+  void beep(uint16_t onMs, uint8_t count = 1, uint16_t gapMs = BEEP_GAP_MS) {
+    onMs_ = onMs;
+    gapMs_ = gapMs;
+    remainingBeeps_ = count;
+    startBeep();
+  }
+
+  bool busy() const {
+    return ledUntilMs_ != 0 || buzzUntilMs_ != 0 || remainingBeeps_ > 0;
+  }
+
+  void playAlarm(uint8_t state) {
+    switch (state) {
+      case 1:
+        flash(true, false, false);
+        beep(BEEP_LONG_MS, 2, BEEP_GAP_MS);
+        break;
+      case 2:
+        flash(false, true, false);
+        beep(BEEP_SHORT_MS);
+        break;
+      case 3:
+        flash(false, false, true);
+        beep(BEEP_SHORT_MS);
+        break;
+      case 4:
+        flash(true, true, true);
+        beep(BEEP_SHORT_MS);
+        break;
+      case 5:
+        flash(true, false, true);
+        beep(BEEP_SHORT_MS);
+        break;
+      default:
+        break;
     }
   }
-}
 
-//----------------------------------------------------------------------Funcion encargada de subscribir el nodo a los servicio de administracion remota y de notificar los para metros configurables al mismo
-void initManagedDevice() {
-  if (client.subscribe(responseTopic)) {                         //Subscribir el nodo al servicio de mensajeria de respuesta
-    //SSDEBUG.println(F("subscribe to responses OK"));                   //si se logro la sibscripcion entonces imprimir un mensaje de exito
-  }
-  else {
-    //SSDEBUG.println(F("subscribe to responses FAILED"));               //Si no se logra la subcripcion imprimir un mensaje de error
-  }
-  
-  if (client.subscribe(rebootTopic)) {                                //Subscribir el nodo al servicio de mensajeria de reinicio remoto
-    //SSDEBUG.println(F("subscribe to reboot OK"));                      //si se logro la sibscripcion entonces imprimir un mensaje de exito
-  }
-  else {
-    //SSDEBUG.println(F("subscribe to reboot FAILED"));                  //Si no se logra la subcripcion imprimir un mensaje de error                
-  }
-  
-  if (client.subscribe(updateTopic)) {                    //Subscribir el nodo al servicio de mensajeria de reinicio remoto
-    //SSDEBUG.println(F("subscribe to update OK"));                      //si se logro la sibscripcion entonces imprimir un mensaje de exito
-  }
-  else {
-    //SSDEBUG.println(F("subscribe to update FAILED"));                  //Si no se logra la subcripcion imprimir un mensaje de error         
-  }
-  
-  StaticJsonBuffer<500> jsonBuffer;
-  JsonObject& root = jsonBuffer.createObject();
-  JsonObject& d = root.createNestedObject("d");
-  JsonObject& metadata = d.createNestedObject("metadata");
-  metadata["UInterval"] = UInterval;
-  metadata["UPDATETIME"] = 60*UInterval;
-  metadata["NResetTIME"] = 60*60*UInterval;
-  metadata["timeZone"] = timeZone;    
-  JsonObject& supports = d.createNestedObject("supports");
-  supports["deviceActions"] = true;  
-  JsonObject& deviceInfo = d.createNestedObject("deviceInfo");
-  deviceInfo["ntpServerName"] = ntpServerName;
-  deviceInfo["server"] = MQTTServer;
-  deviceInfo["MacAddress"] = Smacaddrs;
-  deviceInfo["IPAddress"]= Sipaddrs;    
-  char buff[500];
-  root.printTo(buff, sizeof(buff));
-  //SSDEBUG.println(F("publishing device manageTopic metadata:"));
-  //SSDEBUG.println(buff);
-  sent++;
-  if (client.publish(manageTopic, buff)) {
-    //SSDEBUG.println(F("device Publish ok"));
-  }else {
-    //SSDEBUG.println(F("device Publish failed:"));
-  }
-}
-
-//----------------------------------------------------------------------send an NTP request to the time server at the given address
-void sendNTPpacket(IPAddress &address)
-{
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12]  = 49;
-  packetBuffer[13]  = 0x4E;
-  packetBuffer[14]  = 49;
-  packetBuffer[15]  = 52;
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:                 
-  udp.beginPacket(address, 123); //NTP requests are to port 123
-  udp.write(packetBuffer, NTP_PACKET_SIZE);
-  udp.endPacket();
-}
-
-//----------------------------------------------------------------------Funcion para obtener el paquee de TP y procesasr la fecha hora desde el servidor de NTP
-time_t getNtpTime(){
-  while (udp.parsePacket() > 0) ; // discard any previously received packets
-  //SSDEBUG.println(F("Transmit NTP Request"));
-  sendNTPpacket(timeServer);
-  uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
-    int size = udp.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
-      //SSDEBUG.println(F("Receive NTP Response"));
-      NTP = true;
-      udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
-      unsigned long secsSince1900;
-      // convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
+  void tick() {
+    const uint32_t now = millis();
+    if (ledUntilMs_ != 0 && (int32_t)(now - ledUntilMs_) >= 0) {
+      leds(false, false, false);
+      ledUntilMs_ = 0;
+    }
+    if (buzzUntilMs_ == 0) {
+      return;
+    }
+    if ((int32_t)(now - buzzUntilMs_) < 0) {
+      return;
+    }
+    if (buzzOn_) {
+      digitalWrite(PIN_BUZZER, LOW);
+      buzzOn_ = false;
+      remainingBeeps_--;
+      if (remainingBeeps_ > 0) {
+        buzzUntilMs_ = now + gapMs_;
+      } else {
+        buzzUntilMs_ = 0;
+      }
+    } else if (remainingBeeps_ > 0) {
+      startBeep();
+    } else {
+      buzzUntilMs_ = 0;
     }
   }
-  Rojo.Flash();
-  Verde.Flash();
-  //SSDEBUG.println(F("No NTP Response :-("));
-  return 0; // return 0 if unable to get the time
-}
 
+ private:
+  void startBeep() {
+    digitalWrite(PIN_BUZZER, HIGH);
+    buzzOn_ = true;
+    buzzUntilMs_ = millis() + onMs_;
+  }
 
-//----------------------------------------------------------------------anager function. Configure the wifi connection if not connect put in mode AP--------//
-void wifimanager() {
-  WiFiManager wifiManager;
-  //SSDEBUG.println(F("empezando"));
-  Azul.Flash();
-  if (!  wifiManager.autoConnect("flatwifi")) {
-    Rojo.On();
-    Azul.On();
-    if (!wifiManager.startConfigPortal("flatwifi")) {
-      //reset and try again, or maybe put it to deep sleep
+  uint32_t ledUntilMs_ = 0;
+  uint32_t buzzUntilMs_ = 0;
+  uint16_t onMs_ = BEEP_SHORT_MS;
+  uint16_t gapMs_ = BEEP_GAP_MS;
+  uint8_t remainingBeeps_ = 0;
+  bool buzzOn_ = false;
+};
+
+class RfidReader {
+ public:
+  void begin() {
+    Serial.begin(RFID_BAUD);
+    winLen_ = 0;
+    cardLen_ = 0;
+    recording_ = false;
+    tagReady_ = false;
+    lastPokeMs_ = 0;
+    rearmAtMs_ = 0;
+    poke();
+  }
+
+  bool takeTag(char* out, size_t outLen) {
+    if (!tagReady_ || out == nullptr || outLen == 0) {
+      return false;
+    }
+    strncpy(out, readyTag_, outLen - 1);
+    out[outLen - 1] = '\0';
+    tagReady_ = false;
+    return true;
+  }
+
+  void tick() {
+    const uint32_t now = millis();
+    while (Serial.available() > 0) {
+      push((char)Serial.read());
+    }
+    if (rearmAtMs_ != 0 && (int32_t)(now - rearmAtMs_) >= 0) {
+      poke();
+      rearmAtMs_ = 0;
+    }
+    if (!recording_ && Serial.available() == 0 &&
+        (now - lastPokeMs_ >= RFID_POKE_MS)) {
+      poke();
+    }
+  }
+
+ private:
+  void poke() {
+    Serial.write(RFID_CMD_WAKE);
+    lastPokeMs_ = millis();
+  }
+
+  void push(char c) {
+    if (recording_) {
+      if (c == '\n' || c == '\r') {
+        if (cardLen_ > 0) {
+          card_[cardLen_] = '\0';
+          strncpy(readyTag_, card_, sizeof(readyTag_) - 1);
+          readyTag_[sizeof(readyTag_) - 1] = '\0';
+          tagReady_ = true;
+          rearmAtMs_ = millis() + RFID_REARM_MS;
+        }
+        recording_ = false;
+        cardLen_ = 0;
+      } else if (cardLen_ + 1U < sizeof(card_)) {
+        card_[cardLen_++] = c;
+      }
+      return;
+    }
+
+    if (winLen_ + 1U >= sizeof(win_)) {
+      memmove(win_, win_ + 1, sizeof(win_) - 2);
+      winLen_ = sizeof(win_) - 2;
+    }
+    win_[winLen_++] = c;
+    win_[winLen_] = '\0';
+    if (strstr(win_, "Series Number:") != nullptr) {
+      winLen_ = 0;
+      win_[0] = '\0';
+      recording_ = true;
+      cardLen_ = 0;
+    }
+  }
+
+  char win_[64];
+  char card_[32];
+  char readyTag_[32];
+  uint8_t winLen_ = 0;
+  uint8_t cardLen_ = 0;
+  bool recording_ = false;
+  bool tagReady_ = false;
+  uint32_t lastPokeMs_ = 0;
+  uint32_t rearmAtMs_ = 0;
+};
+
+class NtpClient {
+ public:
+  void begin(uint16_t localPort) {
+    udp_.begin(localPort);
+    waiting_ = false;
+    synced_ = false;
+  }
+
+  void request() {
+    while (udp_.parsePacket() > 0) {
+      udp_.read(packet_, kNtpPacketSize);
+    }
+    memset(packet_, 0, kNtpPacketSize);
+    packet_[0] = 0b11100011;
+    packet_[1] = 0;
+    packet_[2] = 6;
+    packet_[3] = 0xEC;
+    packet_[12] = 49;
+    packet_[13] = 0x4E;
+    packet_[14] = 49;
+    packet_[15] = 52;
+    udp_.beginPacket(timeServer, 123);
+    udp_.write(packet_, kNtpPacketSize);
+    udp_.endPacket();
+    sentAtMs_ = millis();
+    waiting_ = true;
+    DBG_PRINTLN(F("NTP request sent"));
+  }
+
+  bool tick() {
+    if (!waiting_) {
+      return false;
+    }
+    const int size = udp_.parsePacket();
+    if (size >= kNtpPacketSize) {
+      udp_.read(packet_, kNtpPacketSize);
+      unsigned long secsSince1900 =
+          ((unsigned long)packet_[40] << 24) |
+          ((unsigned long)packet_[41] << 16) |
+          ((unsigned long)packet_[42] << 8) |
+          ((unsigned long)packet_[43]);
+      const time_t epoch = (time_t)(secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR);
+      setTime(epoch);
+      waiting_ = false;
+      synced_ = true;
+      DBG_PRINTLN(F("NTP response OK"));
+      return true;
+    }
+    if (millis() - sentAtMs_ >= NTP_WAIT_MS) {
+      waiting_ = false;
+      DBG_PRINTLN(F("NTP timeout"));
+    }
+    return false;
+  }
+
+  bool waiting() const { return waiting_; }
+  bool synced() const { return synced_; }
+
+ private:
+  WiFiUDP udp_;
+  uint8_t packet_[kNtpPacketSize];
+  uint32_t sentAtMs_ = 0;
+  bool waiting_ = false;
+  bool synced_ = false;
+};
+
+class NodeFirmware {
+ public:
+  NodeFirmware() {
+    self_ = this;
+  }
+
+  void setup() {
+    fb_.begin();
+    fb_.solid(false, true, false);
+
+    DebugSerial.begin(DEBUG_BAUD);
+    snprintf(nodeId_, sizeof(nodeId_), "%lu", (unsigned long)ESP.getChipId());
+
+    DBG_PRINTLN(F(""));
+    DBG_PRINTLN(F("RFID node boot"));
+    DBG_PRINT(F("CHIPID: "));
+    DBG_PRINTLN(nodeId_);
+    DBG_PRINT(F("HW: "));
+    DBG_PRINTLN(HardwareVersion);
+    DBG_PRINT(F("FW: "));
+    DBG_PRINTLN(FirmwareVersion);
+    DBG_PRINT(F("NTP: "));
+    DBG_PRINTLN(ntpServerName);
+    DBG_PRINT(F("MQTT: "));
+    DBG_PRINTLN(MQTTServer);
+
+    fb_.solid(false, false, true);
+    ensureWifi();
+    cacheNetIdentity();
+
+    rfid_.begin();
+    ntp_.begin(localPort);
+    buildMqttClientId();
+    mqtt_.setServer(MQTTServer, 1883);
+    mqtt_.setKeepAlive(60);
+    mqtt_.setCallback(mqttThunk);
+
+    ntpRetries_ = 0;
+    ntp_.request();
+    setState(AppState::WaitNtp);
+  }
+
+  void loop() {
+    fb_.tick();
+    mqtt_.loop();
+
+    if (rebootRequested_) {
       ESP.restart();
     }
-  }
-}
 
-//----------------------------------------------------------------------anager function. Configure the wifi connection if not connect put in mode AP--------//
-void OnDemandWifimanager() {
-  WiFiManager wifiManager;
-  //SSDEBUG.println(F("Empezando Configuracion de WIFI Bajo Demanda"));
-  Purpura.COn();
-  if (!wifiManager.startConfigPortal("flatwifi")) {
-    //reset and try again, or maybe put it to deep sleep
-    ESP.restart();
-  }
-}
-//-----------------------------------------------------------------------------------Setting up ESP8266 scketch
-void setup() {
-  pinMode(beep, OUTPUT);
-  digitalWrite(beep, LOW);
-  Blanco.COff();
-  Verde.On();
-  SSDEBUG.begin(9600);
-  delay(5000);
-  Verde.Off();
-  Azul.On();
-  Serial.begin(115200);
-  SSDEBUG.println(F("")); 
-  SSDEBUG.println(F("Inicializacion de programa de boton con identificacion RFID;"));
-  SSDEBUG.println(F("Parametros de ambiente de funcionamiento:"));
-  SSDEBUG.print(F("            CHIPID: "));
-  SSDEBUG.println(NodeID);
-  SSDEBUG.print(F("            HARDWARE: "));
-  SSDEBUG.println(HardwareVersion);
-  SSDEBUG.print(F("            FIRMWARE: "));
-  SSDEBUG.println(FirmwareVersion);
-  SSDEBUG.print(F("            Servidor de NTP: "));
-  SSDEBUG.println(ntpServerName);
-  SSDEBUG.print(F("            Servidor de MQTT: "));
-  SSDEBUG.println(MQTTServer);
-  SSDEBUG.print(F("            Client ID: "));
-  SSDEBUG.println(clientId); 
-  delay(UInterval); 
-  //--------------------------------------------------------------------------Configuracion Automatica de Wifi   
-  while (WiFi.status() != WL_CONNECTED) {                                   //conectamos al wifi si no hay la rutina iniciara una pagina web de configuracion en la direccion 192.168.4.1 
-    wifimanager();
-    delay(UInterval);
-  }
-  SSDEBUG.println(WiFi.SSID());
-  SSDEBUG.println(WiFi.RSSI());
-  //SSDEBUG.print(F("Wifi conectado, Direccion de IP Asignado: "));
-  SSDEBUG.println(WiFi.localIP());
-  Sipaddrs = WiFi.localIP().toString();
-  //SSDEBUG.print(F("Direccion de MAC Asignado: "));
-  SSDEBUG.println(WiFi.macAddress());
-  Smacaddrs = String(WiFi.macAddress());
-  SSDEBUG.println(F(""));                                                         //dejamos una linea en blanco en la terminal 
-  Verde.Off();
-  //una vez contados al Wifi nos aseguramos tener la hora correcta simepre
-  //SSDEBUG.println(F("Connected to WiFi, sincronizando con el NTP;"));                    //mensaje de depuracion para saber que se intentara obtner la hora
-  //--------------------------------------------------------------------------Configuracion de NTP
-  //SSDEBUG.print(F("servidor de NTP:"));
-  //SSDEBUG.println(ntpServerName);
-  //--------------------------------------------------------------------------Configuracion de UDP
-  //SSDEBUG.println("Starting UDP");
-  udp.begin(localPort);
-  //SSDEBUG.print("Local port: ");
-  //SSDEBUG.println(udp.localPort());
-  Blanco.COff();
-  while (NTP == false) {
-    setSyncProvider(getNtpTime);                                                          //iniciamos la mensajeria de UDP para consultar la hora en el servicio de NTP remoto (el servidor se configura en 
-    delay(UInterval);
-  }
-  NTP = false;
-  //--------------------------------------------------------------------------Connectando a servicio de MQTT
-  //SSDEBUG.println(F("Time Sync, Connecting to mqtt sevrer"));
-  mqttConnect();                                                            //Conectamos al servicio de Mqtt con las credenciales provistas en el archivo "settings.h"
-  //SSDEBUG.println(F("Mqtt Connection Done!, sending Device Data"));
-  //--------------------------------------------------------------------------Enviando datos de primera conexion
-  initManagedDevice();                                                      //inciamos la administracion remota desde Bluemix
-  //SSDEBUG.println(F("Finalizing Setup"));                                    //enviamos un mensaje de depuracion
-  Blanco.COff();
-  fsm_state = STATE_IDLE; //inciar el estado del la maquina de stado finito
-  //*****************************************************************************************************Iniciar la Lectora en modo de TEST******************************
-   Serial.write(0x02);
-   //****************************************************************************************************Yield para que el ESP haga lo que tiene en cola de hacer********
-  yield();
-}
-
-//-------- Data de Manejo RF_ID_Manejo. Publish the data to MQTT server, the payload should not be bigger than 45 characters name field and data field counts. --------//
-void publishRF_ID_Manejo (String IDModulo,String MSG,float vValue,int RSSIV, int env, int fail,String Tstamp, String SMacAd, String SIpAd){
-  StaticJsonBuffer<300> jsonBuffer;
-  JsonObject& root = jsonBuffer.createObject();
-  JsonObject& d = root.createNestedObject("d");
-  JsonObject& Ddata = d.createNestedObject("Ddata");
-  Ddata["ChipID"] = IDModulo;
-  Ddata["Msg"] = MSG;
-  Ddata["batt"] = vValue;
-  Ddata["RSSI"] = RSSIV;
-  Ddata["publicados"] = env;
-  Ddata["enviados"] = sent;
-  Ddata["fallidos"] = fail;
-  Ddata["Tstamp"] = Tstamp;
-  Ddata["Mac"] = SMacAd;
-  Ddata["Ip"] = SIpAd;
-  char MqttDevicedata[300];
-  root.printTo(MqttDevicedata, sizeof(MqttDevicedata));
-  //SSDEBUG.println(F("publishing device data to manageTopic:"));
-  //SSDEBUG.println(MqttDevicedata);
-  sent++;
-  if (client.publish(manageTopic, MqttDevicedata)) {
-     //SSDEBUG.println(F("enviado data de dispositivo:OK"));
-     published ++;
-     failed = 0; 
-  }else {
-    //SSDEBUG.print(F("enviado data de dispositivo:FAILED"));
-    failed ++;
-  }
-}
-//------------------------------------------------------------------------------------Leer la tarjeta que se presenta
-void readTag() {
-  if( Serial.available()){
-      Serial.write(0x02);
-    char T = Serial.read();
-    if ((T != '\n') && (RECORD)) {
-      CARD_ID += T;
+    switch (state_) {
+      case AppState::WaitNtp:        handleWaitNtp(); break;
+      case AppState::MqttConnect:    handleMqttConnect(); break;
+      case AppState::Idle:           handleIdle(); break;
+      case AppState::TransmitCard:   handleTransmitCard(); break;
+      case AppState::UpdateDevice:   handleUpdateDevice(); break;
+      case AppState::TransmitDevice: handleTransmitDevice(); break;
+      case AppState::TransmitAlarm:  handleTransmitAlarm(); break;
+      case AppState::SyncTime:       handleSyncTime(); break;
+      case AppState::MqttReconnect:  handleMqttReconnect(); break;
     }
-    if ((T == '\n') && (RECORD)) {
-      RECORD = LOW;
-      if(LAST_ID!=CARD_ID){
-        SSDEBUG.println(CARD_ID);
-      }
-      /*Serial.write(0x7f);
-      delay(50);
-      Serial.write(0x0c);
-      delay(50);
-      Serial.write(0xf7);
-      delay(250);*/
-      inputString = CARD_ID;
-      Azul.Flash();
-      LAST_ID = CARD_ID;
-      CARD_ID = "";
-      fsm_state = STATE_TRANSMIT_CARD_DATA;
-    }
-
-    Analisis += T;
-    int ID = Analisis.lastIndexOf("Series Number:");
-    if(ID!=-1){
-      Analisis = "";
-      RECORD = HIGH;
-    }
-  }
-  
-  return;
-}
-
-//--------------------------------------------------------------------------Funcion de Verificacion de bateria------------------------------------------------------------------------------
-float Bateria(){
- //int sensorValue = 4.2; //analogRead(AnalogVCCPin);
- //float volt = sensorValue;
- float volt = 821.14;
- volt = volt / 221.93;
- return volt;
-}
-//--------------------------------------------------------------------------------------Parsear la informacion de la tartjeta leida. (opcional)
-
-//------------------------------------------------------------------------------------------------Funcion de reseteo normal
-void NormalReset(){
-  if (millis()- lastNResetMillis > 60 * 60 * UInterval){
-    hora++;
-    WifiSignal = WiFi.RSSI();
-    if (hora > 24){
-      msg = ("24h NReset");  
-      VBat = 4.2; //Bateria();
-      publishRF_ID_Manejo(NodeID, msg, VBat, WifiSignal, published, failed, ISO8601, Smacaddrs, Sipaddrs);        //publishRF_ID_Manejo (String IDModulo,String MSG,float vValue, int fail,String Tstamp)
-      void disconnect ();
-      hora = 0;
-      ESP.restart();
-    }
-    lastNResetMillis = millis(); //Actulizar la ultima hora de envio
-  }
-}
-//--------------------------------------------------------------------------Funcion de checkear alarmas.!!!------------------------------------------------------------------------------
-void checkalarms (){
-      if (WiFi.RSSI() < -85){
-        if(BeepSignalWarning < 4){
-          buzzer(200);
-          BeepSignalWarning++;
-        }
-        Blanco.CFlash();
-      }
-      BeepSignalWarning = 0;
-  }
-
-//--------------------------------------------------------------------------Funcion dealarmas locales Flash luces y bocina!!!------------------------------------------------------------------------------
-void LocalWarning (){
-     if (millis()- lastwarning > UInterval){
-      lastwarning =millis();
-      if (flashWarning == true){
-        Rojo.Flash();
-        if(BeepBatteryWarning < 4){
-        buzzer(200);
-        BeepBatteryWarning ++;
-        }
-        }else{
-          if (Bateria() > BATTRESHHOLD ){
-            BatWarningSent = true;
-            flashWarning = false;
-            BeepBatteryWarning = 0;
-          }
-        }
-     }
-  }      
-
-//--------------------------------------------------------------------------Funcion de publicar los datos de estado si ha pasado el tiempo establecido entonces*!!------------------------------------------------------------------------------
-void updateDeviceInfo(){
-  msg = ("on");
-  VBat = Bateria();
-  WifiSignal = WiFi.RSSI();
-  if (WiFi.RSSI() < -75){
-    msg = ("LOWiFi");
-    Rojo.Flash();
-    buzzer(200);
-    //SSDEBUG.print(WiFi.SSID());
-    //SSDEBUG.print(" ");
-    //SSDEBUG.println(WiFi.RSSI());
-    fsm_state = STATE_TRANSMIT_ALARM_UPDATE; //publishRF_ID_Manejo(NodeID, msg, VBat, WifiSignal, published, failed, ISO8601, Smacaddrs, Sipaddrs);        //publishRF_ID_Manejo (String IDModulo,String MSG,float vValue, int fail,String Tstamp)
-    return;
-  }
-  if (Bateria() < BATTRESHHOLD ){
-    flashWarning = true;
-    buzzer(200);
-    msg = ("LowBat");
-    if (BatWarningSent == false){
-      fsm_state = STATE_TRANSMIT_ALARM_UPDATE; //publishRF_ID_Manejo(NodeID, msg, VBat, WifiSignal, published, failed, ISO8601, Smacaddrs, Sipaddrs);
-      BatWarningSent = true;
-    }
-    return;
-  }
-  if (Bateria() > BATTRESHHOLD ){
-    BatWarningSent = true;
-    flashWarning = false;
-  }
- }
-
-//----------------------------------------------------------------------------funcion que procesa como desplegar y transmitir la hora de acuerdo al formato del ISO8601
-void CheckTime(){ //digital clock display of the time
-  time_t prevDisplay = 0; 
-  if (timeStatus() != timeNotSet) {
-    if (now() != prevDisplay) {                                             //update the display only if time has changed
-      prevDisplay = now();
-      ISO8601 = String (year(), DEC);
-      ISO8601 += "-";
-      ISO8601 += month();
-      ISO8601 += "-";
-      ISO8601 += day();
-      ISO8601 +="T";
-      if ((hour() >= 0)&& (hour() < 10)){
-        ////SSDEBUG.print(F("+0:"));
-        ////SSDEBUG.println(hour());
-        ISO8601 +="0";
-        ISO8601 += hour();
-      }else{
-        ////SSDEBUG.print(F("hora:"));
-        ////SSDEBUG.println(hour());
-        ISO8601 += hour();
-      }
-      ISO8601 += ":";
-      ISO8601 += minute();
-      ISO8601 += ":";
-      ISO8601 += second();
-    }
-  }
-}
-
-//-------- funcion datos Lectura Tag RF_ID_LECTURA. Publish the data to MQTT server, the payload should not be bigger than 45 characters name field and data field counts. --------//
-void publishRF_ID_Lectura(String IDModulo, String Tstamp, String tagread) {
-  if (OldTagRead != tagread){
-    OldTagRead = tagread;
-    IdEventoT ++;
-    String IDEventoT = String (NodeID + IdEventoT);
-    StaticJsonBuffer<250> jsonBuffer;
-    JsonObject& root = jsonBuffer.createObject();
-    JsonObject& d = root.createNestedObject("d");
-    JsonObject& tagdata = d.createNestedObject("tagdata");
-    tagdata["ChipID"] = IDModulo;
-    tagdata["IDeventoTag"]= IDEventoT;
-    tagdata["Tstamp"] = Tstamp;
-    tagdata["Tag"] = tagread;
-    char MqttTagdata[250];
-    root.printTo(MqttTagdata, sizeof(MqttTagdata));
-    //SSDEBUG.println(F("publishing Tag data to publishTopic:")); 
-    //SSDEBUG.println(MqttTagdata);
-    sent ++;
-    if (client.publish(publishTopic, MqttTagdata)){
-      //SSDEBUG.println(F("enviado data de RFID: OK"));
-      Verde.Flash();
-      buzzer(200);
-      published ++;
-      inputString = "";
-      failed = 0; 
-      }else {
-        //SSDEBUG.println(F("enviado data de RFID: FAILED"));
-        Rojo.Flash();
-        failed ++;
-        OldTagRead = "1";
-        inputString = "";
-      }
-  }else{
-    //SSDEBUG.println("Este es una lectura consecutiva");
-  }
-}
-//******************************************************************************************************si va funcionar
-void RESET()
-{
-  if (millis() - timerEnvioDatos > 9000) 
-  {
-    timerEnvioDatos=millis();
-    Serial.write(0x02);
-    delay(55);
-    //SSDEBUG.println("RESETED");
-  }
-}
-
-//*******************************************************************************************************VOID LOOP*******************************************************
-void loop() {
-  
-    switch(fsm_state){                                                                                  // inciar el casw switch
-    case STATE_IDLE: // hacer cuando el estado sea IDLE
-    readTag(); //leer su hay alguna tarjeta
-    NormalReset();
-    checkalarms();
-    LocalWarning ();
-    if(millis() - lastUPDATEMillis > 30*60*UInterval) {
-        lastUPDATEMillis = millis(); //Actulizar la ultima hora de envio
-        fsm_state = STATE_UPDATE;
-    }
-    
-    if(millis() - lastUPDATEMillis > 60*60*UInterval) {
-        lastUPDATEMillis = millis(); //Actulizar la ultima hora de envio
-        fsm_state = STATE_UPDATE_TIME;
-    }
-    
-    if ( millis() - RetardoLectura > 5 * UInterval){
-        OldTagRead = "1";
-        RetardoLectura = millis(); //Actulizar la ultima hora de envio
-    }
-    // VERIFICAMOS CUANTAS VECES NO SE HAN ENVIOADO PAQUETES (ERRORES)
-    if (failed >= FAILTRESHOLD){
-        failed =0;
-        published =0;
-        sent=0;    
-        ESP.restart();
-    }
-
-    RESET();
-     
-    break;
-    //**************************************************************************************************STATE_TRANSMIT_CARD_DATA*****************************************
-    case STATE_TRANSMIT_CARD_DATA:
-    //Build the Json
-    //check connection
-    //Send the card data
-    if (!client.connected()) {
-        MQTTreconnect();
-    }
-
-    //SSDEBUG.println(F("CARD DATA SENT"));
-    CheckTime();
-    publishRF_ID_Lectura(NodeID,ISO8601,inputString);
-    fsm_state = STATE_IDLE; 
-    break;
-    //**************************************************************************************************STATE_UPDATE*****************************************************
-    case STATE_UPDATE:
-    //SSDEBUG.println(F("STATE_UPDATE"));
-    updateDeviceInfo();
-    fsm_state = STATE_TRANSMIT_DEVICE_UPDATE;
-    break;
-    //**************************************************************************************************STATE_TRANSMIT_DEVICE_UPDATE*************************************
-    case STATE_TRANSMIT_DEVICE_UPDATE:
-    //SSDEBUG.println(F("STATE_TRANSMIT_DEVICE_UPDATE"));
-    //verificar que el cliente de Conexion al servicio se encuentre conectado
-    if (!client.connected()) {
-        MQTTreconnect();
-    }
-    //verificar la hora
-    CheckTime();
-    publishRF_ID_Manejo(NodeID, msg, VBat, WifiSignal, published, failed, ISO8601, Smacaddrs, Sipaddrs);
-    fsm_state = STATE_IDLE;
-    break;
-    //**************************************************************************************************STATE_TRANSMIT_ALARM_UPDATE**************************************
-    case STATE_TRANSMIT_ALARM_UPDATE:
-    //SSDEBUG.println(F("STATE_TRANSMIT_ALARM_UPDATE"));
-    //verificar que el cliente de Conexion al servicio se encuentre conectado
-    if (!client.connected()) {
-        MQTTreconnect();
-    }
-    // Verificar la hora
-    CheckTime();
-    publishRF_ID_Manejo(NodeID,msg, VBat, WifiSignal, published, failed, ISO8601, Smacaddrs, Sipaddrs);
-    break;
-    //**************************************************************************************************STATE_UPDATE_TIME************************************************
-    case STATE_UPDATE_TIME:
-    //SSDEBUG.println(F("Starting UDP"));
-    udp.begin(localPort);
-    //SSDEBUG.print(("Local port: "));
-    //SSDEBUG.println(udp.localPort());
-    while (NTP == false) {
-        setSyncProvider(getNtpTime);                                                                    //iniciamos la mensajeria de UDP para consultar la hora en el servicio de NTP remoto (el servidor se configura en 
-        delay(UInterval);
-    }                                                                                                   //Cuando fue actualizada la hora del reloj
-    NTP = false;
-    fsm_state = STATE_IDLE; 
-    break;
-    }
-
-     if ( millis() - Check_connection_mqtt > 5 * UInterval){
-       Check_connection_mqtt = millis();
-       //verificar que el cliente de Conexion al servicio se encuentre conectado
-       if (!client.connected()) {
-         MQTTreconnect();
-       }
-       client.loop();
-     }
 
     yield();
+  }
+
+ private:
+  static NodeFirmware* self_;
+  static void mqttThunk(const char* topic, const uint8_t* payload, uint16_t length) {
+    if (self_ != nullptr) {
+      self_->onMqtt(topic, payload, length);
+    }
+  }
+
+  void setState(AppState next) {
+    if (next == state_) {
+      return;
+    }
+    DBG_PRINT(F("FSM "));
+    DBG_PRINT(stateName(state_));
+    DBG_PRINT(F(" -> "));
+    DBG_PRINTLN(stateName(next));
+    state_ = next;
+  }
+
+  void ensureWifi() {
+    if (WiFi.status() == WL_CONNECTED) {
+      return;
+    }
+    // WiFiManager's portal has no async API; this is the only blocking wait left.
+    WiFiManager wifiManager;
+    fb_.flash(false, false, true);
+    if (!wifiManager.autoConnect(kWifiApName)) {
+      fb_.solid(true, false, true);
+      if (!wifiManager.startConfigPortal(kWifiApName)) {
+        ESP.restart();
+      }
+    }
+  }
+
+  void cacheNetIdentity() {
+    const String ip = WiFi.localIP().toString();
+    const String mac = WiFi.macAddress();
+    strncpy(ip_, ip.c_str(), sizeof(ip_) - 1);
+    strncpy(mac_, mac.c_str(), sizeof(mac_) - 1);
+    ip_[sizeof(ip_) - 1] = '\0';
+    mac_[sizeof(mac_) - 1] = '\0';
+    DBG_PRINTLN(WiFi.SSID());
+    DBG_PRINTLN(WiFi.RSSI());
+    DBG_PRINTLN(ip_);
+    DBG_PRINTLN(mac_);
+  }
+
+  void buildMqttClientId() {
+    snprintf(mqttClientId_, sizeof(mqttClientId_), "d:%s:%s:%s%s",
+             ORG, DEVICE_TYPE, DEVICE_ID, nodeId_);
+  }
+
+  bool mqttConnectOnce() {
+    DBG_PRINT(F("MQTT connect "));
+    DBG_PRINTLN(MQTTServer);
+    fb_.flash(true, true, true);
+#if defined(internetS)
+    return mqtt_.connect(mqttClientId_, kMqttUser, kMqttPass);
+#else
+    return mqtt_.connect(mqttClientId_, "", "");
+#endif
+  }
+
+  void subscribeAll() {
+    if (!mqtt_.subscribe(responseTopic)) {
+      DBG_PRINTLN(F("sub response FAIL"));
+    }
+    if (!mqtt_.subscribe(rebootTopic)) {
+      DBG_PRINTLN(F("sub reboot FAIL"));
+    }
+    if (!mqtt_.subscribe(updateTopic)) {
+      DBG_PRINTLN(F("sub update FAIL"));
+    }
+    publishManageMetadata();
+  }
+
+  void publishManageMetadata() {
+    JsonDocument doc;
+    JsonObject d = doc["d"].to<JsonObject>();
+    JsonObject metadata = d["metadata"].to<JsonObject>();
+    metadata["UInterval"] = UInterval;
+    metadata["UPDATETIME"] = 60 * UInterval;
+    metadata["NResetTIME"] = 60 * 60 * UInterval;
+    metadata["timeZone"] = timeZone;
+    JsonObject supports = d["supports"].to<JsonObject>();
+    supports["deviceActions"] = true;
+    JsonObject deviceInfo = d["deviceInfo"].to<JsonObject>();
+    deviceInfo["ntpServerName"] = ntpServerName;
+    deviceInfo["server"] = MQTTServer;
+    deviceInfo["MacAddress"] = mac_;
+    deviceInfo["IPAddress"] = ip_;
+    char buff[500];
+    serializeJson(doc, buff, sizeof(buff));
+    sent_++;
+    if (mqtt_.publish(manageTopic, buff)) {
+      published_++;
+      failed_ = 0;
+    } else {
+      failed_++;
+      DBG_PRINTLN(F("manage publish FAIL"));
+    }
+  }
+
+  void onMqtt(const char* topic, const uint8_t* payload, uint16_t length) {
+    if (strcmp(rebootTopic, topic) == 0) {
+      DBG_PRINTLN(F("remote reboot queued"));
+      rebootRequested_ = true;
+      return;
+    }
+
+    JsonDocument doc;
+    const DeserializationError err = deserializeJson(doc, payload, length);
+    if (err) {
+      DBG_PRINT(F("JSON parse FAIL: "));
+      DBG_PRINTLN(err.c_str());
+      return;
+    }
+
+    if (strcmp(updateTopic, topic) == 0) {
+      return;
+    }
+    if (strcmp(responseTopic, topic) == 0) {
+      handleAlarmJson(doc);
+    }
+  }
+
+  void handleAlarmJson(JsonDocument& doc) {
+    if (!chipIdMatches(doc)) {
+      return;
+    }
+    if (doc["ALARM_STATE"].isNull()) {
+      return;
+    }
+    const int alarm = doc["ALARM_STATE"].as<int>();
+    if (alarm < 1 || alarm > 5) {
+      DBG_PRINTLN(F("ALARM_STATE out of range"));
+      return;
+    }
+    pendingAlarm_ = (uint8_t)alarm;
+    alarmQueued_ = true;
+  }
+
+  bool chipIdMatches(JsonDocument& doc) {
+    JsonVariant v = doc["CHIPID"];
+    if (v.isNull()) {
+      v = doc["ChipID"];
+    }
+    if (v.isNull()) {
+      return false;
+    }
+    if (v.is<const char*>()) {
+      const char* asText = v.as<const char*>();
+      return asText != nullptr && strcmp(asText, nodeId_) == 0;
+    }
+    char tmp[16];
+    snprintf(tmp, sizeof(tmp), "%ld", v.as<long>());
+    return strcmp(tmp, nodeId_) == 0;
+  }
+
+  void formatIso8601(char* out, size_t outLen) {
+    if (timeStatus() == timeNotSet) {
+      strncpy(out, "unsynced", outLen - 1);
+      out[outLen - 1] = '\0';
+      return;
+    }
+    snprintf(out, outLen, "%04d-%02d-%02dT%02d:%02d:%02d",
+             year(), month(), day(), hour(), minute(), second());
+  }
+
+  float readBatteryVolts() {
+    const uint16_t raw = (uint16_t)analogRead(PIN_VBAT);
+    const float volt = (float)raw / 221.93f;
+    if (volt < 0.5f || volt > 5.5f) {
+      DBG_PRINTLN(F("VBAT reading rejected"));
+      return -1.0f;
+    }
+    return volt;
+  }
+
+  bool mqttReady() {
+    if (mqtt_.connected()) {
+      mqttRetries_ = 0;
+      return true;
+    }
+    resumeAfterMqtt_ = state_;
+    setState(AppState::MqttReconnect);
+    return false;
+  }
+
+  void publishDevice(const char* msg) {
+    char iso[24];
+    formatIso8601(iso, sizeof(iso));
+    const int16_t rssi = (int16_t)WiFi.RSSI();
+    float vbat = vbat_;
+    if (vbat < 0.0f) {
+      vbat = 0.0f;
+    }
+
+    JsonDocument doc;
+    JsonObject d = doc["d"].to<JsonObject>();
+    JsonObject Ddata = d["Ddata"].to<JsonObject>();
+    Ddata["ChipID"] = nodeId_;
+    Ddata["Msg"] = msg;
+    Ddata["batt"] = vbat;
+    Ddata["RSSI"] = rssi;
+    Ddata["publicados"] = published_;
+    Ddata["enviados"] = sent_;
+    Ddata["fallidos"] = failed_;
+    Ddata["Tstamp"] = iso;
+    Ddata["Mac"] = mac_;
+    Ddata["Ip"] = ip_;
+    char payload[300];
+    serializeJson(doc, payload, sizeof(payload));
+    sent_++;
+    if (mqtt_.publish(manageTopic, payload)) {
+      published_++;
+      failed_ = 0;
+    } else {
+      failed_++;
+      fb_.flash(true, false, false);
+      DBG_PRINTLN(F("device publish FAIL"));
+    }
+  }
+
+  void publishTag(const char* tag) {
+    if (strcmp(oldTag_, tag) == 0) {
+      DBG_PRINTLN(F("duplicate tag ignored"));
+      return;
+    }
+    strncpy(oldTag_, tag, sizeof(oldTag_) - 1);
+    oldTag_[sizeof(oldTag_) - 1] = '\0';
+    eventId_++;
+
+    char iso[24];
+    formatIso8601(iso, sizeof(iso));
+    char eventKey[24];
+    snprintf(eventKey, sizeof(eventKey), "%s%u", nodeId_, (unsigned)eventId_);
+
+    JsonDocument doc;
+    JsonObject d = doc["d"].to<JsonObject>();
+    JsonObject tagdata = d["tagdata"].to<JsonObject>();
+    tagdata["ChipID"] = nodeId_;
+    tagdata["IDeventoTag"] = eventKey;
+    tagdata["Tstamp"] = iso;
+    tagdata["Tag"] = tag;
+    char payload[250];
+    serializeJson(doc, payload, sizeof(payload));
+    sent_++;
+    if (mqtt_.publish(publishTopic, payload)) {
+      published_++;
+      failed_ = 0;
+      fb_.flash(false, true, false);
+      fb_.beep(BEEP_SHORT_MS);
+    } else {
+      failed_++;
+      oldTag_[0] = '1';
+      oldTag_[1] = '\0';
+      fb_.flash(true, false, false);
+      DBG_PRINTLN(F("tag publish FAIL"));
+    }
+  }
+
+  void handleWaitNtp() {
+    if (ntp_.tick()) {
+      ntpRetries_ = 0;
+      lastNtpMs_ = millis();
+      setState(AppState::MqttConnect);
+      return;
+    }
+    if (ntp_.waiting()) {
+      return;
+    }
+    ntpRetries_++;
+    fb_.flash(true, true, false);
+    if (ntpRetries_ >= NTP_RETRY_MAX) {
+      DBG_PRINTLN(F("NTP giving up; continuing"));
+      setState(AppState::MqttConnect);
+      return;
+    }
+    ntp_.request();
+  }
+
+  void handleMqttConnect() {
+    if (mqtt_.connected()) {
+      mqttRetries_ = 0;
+      subscribeAll();
+      fb_.off();
+      lastDeviceMs_ = millis();
+      lastNtpMs_ = millis();
+      lastHourMs_ = millis();
+      lastDedupeMs_ = millis();
+      setState(AppState::Idle);
+      return;
+    }
+    if (millis() - lastMqttAttemptMs_ < MQTT_RETRY_MS && lastMqttAttemptMs_ != 0) {
+      return;
+    }
+    lastMqttAttemptMs_ = millis();
+    if (mqttConnectOnce()) {
+      return;
+    }
+    mqttRetries_++;
+    fb_.flash(true, false, false);
+    if (mqttRetries_ > MQTT_RETRY_MAX) {
+      ESP.restart();
+    }
+  }
+
+  void handleIdle() {
+    if (WiFi.status() != WL_CONNECTED) {
+      if (millis() - lastWifiMs_ >= 5000UL) {
+        lastWifiMs_ = millis();
+        WiFi.reconnect();
+      }
+    }
+    if (!mqtt_.connected()) {
+      resumeAfterMqtt_ = AppState::Idle;
+      setState(AppState::MqttReconnect);
+      return;
+    }
+
+    rfid_.tick();
+    char tag[32];
+    if (rfid_.takeTag(tag, sizeof(tag))) {
+      strncpy(pendingTag_, tag, sizeof(pendingTag_) - 1);
+      pendingTag_[sizeof(pendingTag_) - 1] = '\0';
+      fb_.flash(false, false, true);
+      setState(AppState::TransmitCard);
+      return;
+    }
+
+    if (alarmQueued_) {
+      fb_.playAlarm(pendingAlarm_);
+      alarmQueued_ = false;
+    }
+
+    if (!fb_.busy()) {
+      tickHealth();
+    }
+    tickHourlyReset();
+
+    if (failed_ >= FAILTRESHOLD) {
+      DBG_PRINTLN(F("publish fail threshold; restart"));
+      ESP.restart();
+    }
+
+    if (millis() - lastDedupeMs_ >= 5UL * UInterval) {
+      lastDedupeMs_ = millis();
+      oldTag_[0] = '1';
+      oldTag_[1] = '\0';
+    }
+    if (millis() - lastDeviceMs_ >= 30UL * 60UL * UInterval) {
+      lastDeviceMs_ = millis();
+      setState(AppState::UpdateDevice);
+      return;
+    }
+    if (millis() - lastNtpMs_ >= 60UL * 60UL * UInterval) {
+      lastNtpMs_ = millis();
+      ntpRetries_ = 0;
+      ntp_.request();
+      setState(AppState::SyncTime);
+    }
+  }
+
+  void tickHealth() {
+    if (millis() - lastWarningMs_ < UInterval) {
+      return;
+    }
+    lastWarningMs_ = millis();
+
+    const int16_t rssi = (int16_t)WiFi.RSSI();
+    if (rssi < RSSI_ALARM_DBM) {
+      fb_.flash(true, true, true);
+      if (signalBeeps_ < SIGNAL_BEEP_MAX) {
+        fb_.beep(BEEP_SHORT_MS);
+        signalBeeps_++;
+      }
+    } else {
+      signalBeeps_ = 0;
+    }
+
+    vbat_ = readBatteryVolts();
+    if (vbat_ >= 0.0f && vbat_ < BATTRESHHOLD) {
+      flashWarning_ = true;
+      if (battBeeps_ < BATT_BEEP_MAX) {
+        fb_.beep(BEEP_SHORT_MS);
+        battBeeps_++;
+      }
+      fb_.flash(true, false, false);
+    } else if (vbat_ >= BATTRESHHOLD) {
+      flashWarning_ = false;
+      battBeeps_ = 0;
+      batWarningSent_ = false;
+    }
+    if (flashWarning_) {
+      fb_.flash(true, false, false);
+    }
+  }
+
+  void tickHourlyReset() {
+    if (millis() - lastHourMs_ < 60UL * 60UL * UInterval) {
+      return;
+    }
+    lastHourMs_ = millis();
+    hourCount_++;
+    if (hourCount_ <= 24) {
+      return;
+    }
+    strncpy(statusMsg_, "24h NReset", sizeof(statusMsg_) - 1);
+    vbat_ = readBatteryVolts();
+    if (mqtt_.connected()) {
+      publishDevice(statusMsg_);
+    }
+    ESP.restart();
+  }
+
+  void handleTransmitCard() {
+    if (!mqttReady()) {
+      return;
+    }
+    publishTag(pendingTag_);
+    setState(AppState::Idle);
+  }
+
+  void handleUpdateDevice() {
+    vbat_ = readBatteryVolts();
+    const int16_t rssi = (int16_t)WiFi.RSSI();
+    strncpy(statusMsg_, "on", sizeof(statusMsg_) - 1);
+
+    if (rssi < RSSI_WEAK_DBM) {
+      strncpy(statusMsg_, "LOWiFi", sizeof(statusMsg_) - 1);
+      fb_.flash(true, false, false);
+      fb_.beep(BEEP_SHORT_MS);
+      setState(AppState::TransmitAlarm);
+      return;
+    }
+    if (vbat_ >= 0.0f && vbat_ < BATTRESHHOLD) {
+      flashWarning_ = true;
+      fb_.beep(BEEP_SHORT_MS);
+      strncpy(statusMsg_, "LowBat", sizeof(statusMsg_) - 1);
+      if (!batWarningSent_) {
+        batWarningSent_ = true;
+        setState(AppState::TransmitAlarm);
+        return;
+      }
+      setState(AppState::Idle);
+      return;
+    }
+    if (vbat_ >= BATTRESHHOLD) {
+      batWarningSent_ = false;
+      flashWarning_ = false;
+    }
+    setState(AppState::TransmitDevice);
+  }
+
+  void handleTransmitDevice() {
+    if (!mqttReady()) {
+      return;
+    }
+    publishDevice(statusMsg_);
+    setState(AppState::Idle);
+  }
+
+  void handleTransmitAlarm() {
+    if (!mqttReady()) {
+      return;
+    }
+    publishDevice(statusMsg_);
+    setState(AppState::Idle);
+  }
+
+  void handleSyncTime() {
+    if (ntp_.tick()) {
+      ntpRetries_ = 0;
+      setState(AppState::Idle);
+      return;
+    }
+    if (ntp_.waiting()) {
+      rfid_.tick();
+      return;
+    }
+    ntpRetries_++;
+    if (ntpRetries_ >= NTP_RETRY_MAX) {
+      DBG_PRINTLN(F("periodic NTP failed"));
+      setState(AppState::Idle);
+      return;
+    }
+    ntp_.request();
+  }
+
+  void handleMqttReconnect() {
+    if (mqtt_.connected()) {
+      mqttRetries_ = 0;
+      subscribeAll();
+      const AppState resume = resumeAfterMqtt_;
+      resumeAfterMqtt_ = AppState::Idle;
+      setState(resume);
+      return;
+    }
+    if (millis() - lastMqttAttemptMs_ < MQTT_RETRY_MS) {
+      rfid_.tick();
+      return;
+    }
+    lastMqttAttemptMs_ = millis();
+    fb_.beep(BEEP_SHORT_MS);
+    if (mqttConnectOnce()) {
+      return;
+    }
+    mqttRetries_++;
+    fb_.flash(true, false, false);
+    if (mqttRetries_ > MQTT_RETRY_MAX) {
+      ESP.restart();
+    }
+  }
+
+  AppState state_ = AppState::WaitNtp;
+  AppState resumeAfterMqtt_ = AppState::Idle;
+  Feedback fb_;
+  RfidReader rfid_;
+  NtpClient ntp_;
+  Mqtt5Client mqtt_;
+
+  char nodeId_[16] = {};
+  char mqttClientId_[40] = {};
+  char mac_[18] = {};
+  char ip_[16] = {};
+  char pendingTag_[32] = {};
+  char oldTag_[32] = {'1', '\0'};
+  char statusMsg_[16] = {'o', 'n', '\0'};
+
+  uint32_t lastDeviceMs_ = 0;
+  uint32_t lastNtpMs_ = 0;
+  uint32_t lastHourMs_ = 0;
+  uint32_t lastDedupeMs_ = 0;
+  uint32_t lastWarningMs_ = 0;
+  uint32_t lastMqttAttemptMs_ = 0;
+  uint32_t lastWifiMs_ = 0;
+
+  uint16_t sent_ = 0;
+  uint16_t published_ = 0;
+  uint16_t failed_ = 0;
+  uint16_t eventId_ = 0;
+  uint8_t hourCount_ = 0;
+  uint8_t ntpRetries_ = 0;
+  uint8_t mqttRetries_ = 0;
+  uint8_t signalBeeps_ = 0;
+  uint8_t battBeeps_ = 0;
+  uint8_t pendingAlarm_ = 0;
+
+  float vbat_ = 0.0f;
+  bool alarmQueued_ = false;
+  bool rebootRequested_ = false;
+  bool flashWarning_ = false;
+  bool batWarningSent_ = false;
+};
+
+NodeFirmware* NodeFirmware::self_ = nullptr;
+
+/*
+  Wiring pinout (see hardware.h for GPIO notes)
+
+  RFID reader  -> UART0 (TX GPIO1 / RX GPIO3) @ 115200
+  Debug UART   -> D1 RX / D2 TX @ 9600
+  Buzzer       -> D5 (idle LOW)
+  LED R/G/B    -> D8 / D7 / D6 (active HIGH)
+  Battery      -> A0
+*/
+
+static NodeFirmware g_node;
+
+void setup() {
+  g_node.setup();
+}
+
+void loop() {
+  g_node.loop();
 }

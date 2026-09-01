@@ -1,0 +1,8 @@
+{
+  "name": "mqtt5nano-codec",
+  "version": "0.7.0",
+  "description": "MQTT 5 packet codec vendored from awootton/mqtt5nano (parser/generator only).",
+  "keywords": "mqtt,mqtt5",
+  "frameworks": "arduino",
+  "platforms": ["espressif8266", "espressif32"]
+}

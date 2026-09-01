@@ -1,6 +1,10 @@
 
-#include <WString.h>                // include the String library
-#include <IPAddress.h>              // include the IPAdress library
+#include <WString.h>
+#include <IPAddress.h>
+
+#ifndef DEBUG_SERIAL
+#define DEBUG_SERIAL 1
+#endif
 //-------- Customise these values-----------
 //---------Bluemix IBM Settings-------------
 #define ORG "EVENTBOX"
@@ -19,7 +23,7 @@
 //-------- Customise these values-----------
 
 char MQTTServer [] = USAC;
-String FirmwareVersion= "V1.2a";                                        //read in chage history
+String FirmwareVersion= "V1.4a";
 String HardwareVersion= "V2.00";                                              //read in chage history 
 //---------Blurmix Topics---------------------
 
