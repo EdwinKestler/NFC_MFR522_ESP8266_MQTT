@@ -1,3 +1,4 @@
+#pragma once
 
 #include <WString.h>
 #include <IPAddress.h>

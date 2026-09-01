@@ -23,9 +23,9 @@
 
 #include "settings.h"
 #include "hardware.h"
-#include "debug.h"
+#include "node_debug.h"
 
-SoftwareSerial DebugSerial(PIN_DBG_RX, PIN_DBG_TX, false, 256);
+SoftwareSerial DebugSerial(PIN_DBG_RX, PIN_DBG_TX, false);
 
 static const char kWifiApName[] = "flatwifi";
 static const char kMqttUser[]   = "flatboxadmin";
@@ -338,7 +338,7 @@ class NodeFirmware {
     fb_.begin();
     fb_.solid(false, true, false);
 
-    DebugSerial.begin(DEBUG_BAUD);
+    DebugSerial.begin(DEBUG_BAUD, SWSERIAL_8N1, PIN_DBG_RX, PIN_DBG_TX, false, 256);
     snprintf(nodeId_, sizeof(nodeId_), "%lu", (unsigned long)ESP.getChipId());
 
     DBG_PRINTLN(F(""));

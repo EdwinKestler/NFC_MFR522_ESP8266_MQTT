@@ -6,7 +6,7 @@
 #define DEBUG_SERIAL 1
 #endif
 
-class SoftwareSerial;
+#include <SoftwareSerial.h>
 extern SoftwareSerial DebugSerial;
 
 #if DEBUG_SERIAL

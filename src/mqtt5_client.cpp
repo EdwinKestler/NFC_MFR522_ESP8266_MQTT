@@ -19,7 +19,7 @@ void copySlice(const mqtt5nano::slice& s, char* out, size_t outLen) {
   if (outLen == 0) {
     return;
   }
-  const int n = s.size();
+  const int n = (s.base == nullptr || s.start >= s.end) ? 0 : (int)(s.end - s.start);
   const int copy = (n + 1 > (int)outLen) ? (int)outLen - 1 : n;
   for (int i = 0; i < copy; i++) {
     out[i] = s.base[s.start + i];
@@ -42,7 +42,7 @@ void Mqtt5Client::setCallback(MessageCallback cb) {
   callback_ = cb;
 }
 
-bool Mqtt5Client::connected() const {
+bool Mqtt5Client::connected() {
   return sessionUp_ && tcp_.connected();
 }
 

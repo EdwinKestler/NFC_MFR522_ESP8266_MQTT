@@ -15,7 +15,7 @@ class Mqtt5Client {
 
   bool connect(const char* clientId, const char* username = nullptr, const char* password = nullptr);
   void disconnect();
-  bool connected() const;
+  bool connected();
 
   bool publish(const char* topic, const char* payload, bool retain = false);
   bool subscribe(const char* topic, uint8_t qos = 1);
