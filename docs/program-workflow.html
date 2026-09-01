@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NFC RFID Node — Program Workflow</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #121b2e;
+      --card: #182338;
+      --line: #2a3b58;
+      --text: #e8eef8;
+      --muted: #93a4bf;
+      --src: #3ee0c5;
+      --nano: #f0a05a;
+      --time: #c4a5ff;
+      --pio: #7db4ff;
+      --idle: #3ee0c5;
+      --warn: #ff7a7a;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Noto Sans", sans-serif;
+    }
+    .poster {
+      width: 1600px;
+      padding: 24px 28px 18px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 16px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: 0.02em;
+    }
+    .sub { color: var(--muted); font-size: 14px; }
+    .meta {
+      text-align: right;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 390px 1fr;
+      gap: 22px;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px 16px 14px;
+    }
+    .tree {
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 12.5px;
+      line-height: 1.45;
+      white-space: pre;
+      color: #d5deee;
+    }
+    .tree .d { color: #9ec5ff; }
+    .tree .src { color: var(--src); }
+    .tree .nano { color: var(--nano); }
+    .tree .time { color: var(--time); }
+    .tree .unused { color: #6d7c94; }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #0f1726;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .flow { display: flex; flex-direction: column; gap: 12px; }
+    .row {
+      display: grid;
+      gap: 10px;
+      align-items: stretch;
+    }
+    .row5 { grid-template-columns: repeat(5, 1fr); }
+    .row4 { grid-template-columns: 1.15fr 0.7fr 1.15fr 0.7fr 1.15fr; }
+    .row3 { grid-template-columns: 1fr 1fr 1fr; }
+    .row-idle { grid-template-columns: 1fr; }
+    .arrow-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      color: var(--muted);
+      font-size: 18px;
+      text-align: center;
+      margin: -6px 0 -2px;
+      letter-spacing: 0.3em;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 11px 9px;
+      min-height: 118px;
+    }
+    .card.idle {
+      border-color: #2f6f66;
+      background: linear-gradient(180deg, #16343a 0%, #182338 55%);
+      min-height: 96px;
+    }
+    .card.alarm {
+      border-color: #6b3a3a;
+    }
+    .kicker {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 7px;
+    }
+    .files { display: flex; flex-direction: column; gap: 3px; }
+    .f {
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 10.5px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      width: fit-content;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .f.src { background: rgba(62,224,197,0.12); color: var(--src); }
+    .f.nano { background: rgba(240,160,90,0.14); color: var(--nano); }
+    .f.time { background: rgba(196,165,255,0.14); color: var(--time); }
+    .f.pio { background: rgba(125,180,255,0.14); color: var(--pio); }
+    .hub {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 10px;
+    }
+    .note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      margin-top: 4px;
+    }
+    footer {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="poster">
+    <header>
+      <div>
+        <h1>NFC RFID Node — program workflow</h1>
+        <div class="sub">ESP8266 Wemos D1 mini · non-blocking OOP state machine · MQTT 5 · ArduinoJson v7</div>
+      </div>
+      <div class="meta">
+        NFC_MFR522_ESP8266_MQTT<br>
+        firmware V1.4a · src/main.cpp NodeFirmware
+      </div>
+    </header>
+
+    <div class="grid">
+      <aside class="panel">
+        <h2>Repository tree</h2>
+        <div class="tree">NFC_MFR522_ESP8266_MQTT/
+├── <span class="d">platformio.ini</span>
+├── <span class="d">.gitignore</span>
+├── <span class="d">src/</span>
+│   ├── <span class="src">main.cpp</span>
+│   ├── <span class="src">mqtt5_client.cpp</span>
+│   ├── <span class="src">mqtt5_client.h</span>
+│   ├── <span class="src">settings.h</span>
+│   ├── <span class="src">hardware.h</span>
+│   └── <span class="src">node_debug.h</span>
+└── <span class="d">lib/</span>
+    ├── <span class="d">mqtt5nano/</span>
+    │   ├── <span class="nano">mqtt5nanoParse.cpp</span>
+    │   ├── <span class="nano">mqtt5nanoParse.h</span>
+    │   ├── <span class="nano">slices.cpp</span>
+    │   ├── <span class="nano">slices.h</span>
+    │   ├── <span class="nano">nanobase64.cpp</span>
+    │   ├── <span class="nano">nanobase64.h</span>
+    │   ├── library.json
+    │   └── README.md
+    ├── <span class="d">TimeESP/</span>
+    │   ├── <span class="time">TimeESP.cpp</span>
+    │   ├── <span class="time">TimeEsp.h</span>
+    │   ├── <span class="time">TimeLibEsp.h</span>
+    │   ├── DateStrings.cpp
+    │   └── examples/
+    └── <span class="unused">BlinkRGB/</span>  <span class="unused">unused in V1.4a</span>
+        BlinkRGB.cpp / .h</div>
+        <div class="legend">
+          <span class="chip"><span class="dot" style="background:var(--src)"></span>src firmware</span>
+          <span class="chip"><span class="dot" style="background:var(--nano)"></span>mqtt5nano codec</span>
+          <span class="chip"><span class="dot" style="background:var(--time)"></span>TimeESP</span>
+          <span class="chip"><span class="dot" style="background:var(--pio)"></span>PlatformIO / core</span>
+        </div>
+        <div class="note">platformio.ini also pulls <b>bblanchon/ArduinoJson ^7.4.0</b> and <b>tzapu/WiFiManager ^2.0.17</b>. ESP8266 core supplies ESP8266WiFi, WiFiUdp, DNSServer, ESP8266WebServer, SoftwareSerial.</div>
+      </aside>
+
+      <section class="flow">
+        <h2>Runtime state machine</h2>
+        <div class="row row5">
+          <div class="card">
+            <div class="kicker">setup()</div>
+            <div class="title">BOOT</div>
+            <div class="files">
+              <span class="f src">src/main.cpp</span>
+              <span class="f src">src/hardware.h</span>
+              <span class="f src">src/settings.h</span>
+              <span class="f src">src/node_debug.h</span>
+              <span class="f pio">SoftwareSerial</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="kicker">ensureWifi()</div>
+            <div class="title">WIFI</div>
+            <div class="files">
+              <span class="f pio">WiFiManager</span>
+              <span class="f pio">ESP8266WiFi</span>
+              <span class="f pio">DNSServer</span>
+              <span class="f pio">ESP8266WebServer</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="kicker">WaitNtp</div>
+            <div class="title">NTP SYNC</div>
+            <div class="files">
+              <span class="f src">src/main.cpp NtpClient</span>
+              <span class="f time">lib/TimeESP/TimeESP.cpp</span>
+              <span class="f time">lib/TimeESP/TimeLibEsp.h</span>
+              <span class="f pio">WiFiUdp</span>
+              <span class="f src">src/settings.h</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="kicker">MqttConnect</div>
+            <div class="title">MQTT 5 CONNECT</div>
+            <div class="files">
+              <span class="f src">src/mqtt5_client.cpp</span>
+              <span class="f nano">mqtt5nanoParse.cpp CONNECT</span>
+              <span class="f nano">slices.cpp</span>
+              <span class="f pio">WiFiClient</span>
+              <span class="f pio">ArduinoJson serialize</span>
+            </div>
+          </div>
+          <div class="card idle">
+            <div class="kicker">Idle hub</div>
+            <div class="title">IDLE</div>
+            <div class="files">
+              <span class="f src">src/main.cpp loop</span>
+              <span class="f src">RfidReader + Feedback</span>
+              <span class="f src">mqtt5_client.cpp loop()</span>
+              <span class="f nano">mqtt5nanoParse.cpp ingest</span>
+            </div>
+          </div>
+        </div>
+        <div class="arrow-row">→ &nbsp; → &nbsp; → &nbsp; → &nbsp; ●</div>
+
+        <div class="hub">
+          <div class="panel">
+            <h2>From IDLE</h2>
+            <div class="row row3">
+              <div class="card">
+                <div class="kicker">tag complete</div>
+                <div class="title">TX_CARD</div>
+                <div class="files">
+                  <span class="f src">src/main.cpp RfidReader</span>
+                  <span class="f pio">Hardware Serial UART0</span>
+                  <span class="f pio">ArduinoJson serialize</span>
+                  <span class="f src">mqtt5_client.cpp publish</span>
+                  <span class="f nano">mqtt5nanoParse.cpp PUBLISH</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="kicker">30 min / RSSI / battery</div>
+                <div class="title">UPDATE → TX_DEVICE / TX_ALARM</div>
+                <div class="files">
+                  <span class="f src">src/main.cpp health</span>
+                  <span class="f src">src/hardware.h A0</span>
+                  <span class="f pio">ArduinoJson serialize</span>
+                  <span class="f src">mqtt5_client.cpp publish</span>
+                  <span class="f nano">mqtt5nanoParse.cpp PUBLISH</span>
+                </div>
+              </div>
+              <div class="card">
+                <div class="kicker">hourly / drop</div>
+                <div class="title">SYNC_TIME / RECONNECT</div>
+                <div class="files">
+                  <span class="f time">TimeESP + WiFiUdp</span>
+                  <span class="f src">mqtt5_client.cpp connect</span>
+                  <span class="f nano">mqtt5nanoParse.cpp CONNECT</span>
+                  <span class="f nano">mqtt5nanoParse.cpp SUBSCRIBE</span>
+                  <span class="f src">src/settings.h topics</span>
+                </div>
+              </div>
+            </div>
+            <div class="note">Every branch returns to IDLE. MQTT reconnect resumes a pending TX_CARD publish if a tag was waiting.</div>
+          </div>
+
+          <div class="panel">
+            <h2>Inbound MQTT (callback, not a state)</h2>
+            <div class="card alarm">
+              <div class="kicker">mqtt5_client onMessage</div>
+              <div class="title">PARSE → QUEUE WORK</div>
+              <div class="files">
+                <span class="f nano">mqtt5nanoParse.cpp parse PUBLISH</span>
+                <span class="f nano">slices.h topic/payload slices</span>
+                <span class="f pio">ArduinoJson deserializeJson</span>
+                <span class="f src">src/main.cpp handleAlarmJson</span>
+                <span class="f src">src/settings.h response/reboot/update topics</span>
+              </div>
+              <div class="note">Callback stays short: copy CHIPID + ALARM_STATE, or set rebootRequested_. LED/buzzer run later in IDLE via Feedback (direct GPIO in main.cpp, not BlinkRGB).</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <footer>
+      Color chips on each card are the exact files/libraries used in that step. BlinkRGB remains in the tree but is not linked by the V1.4a firmware.
+    </footer>
+  </div>
+</body>
+</html>
